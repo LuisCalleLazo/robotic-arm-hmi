@@ -3,7 +3,7 @@ import '../entities/serial_config.dart';
 
 abstract class SerialRepository {
   /// Puertos seriales detectados en este momento.
-  List<PortInfo> listPorts();
+  Future<List<PortInfo>> listPorts();
 
   /// Líneas de texto recibidas (ya separadas por `\n`). Stream broadcast.
   Stream<String> get lines;

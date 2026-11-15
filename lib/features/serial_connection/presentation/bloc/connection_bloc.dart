@@ -140,11 +140,11 @@ class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
   late final StreamSubscription<bool> _linkSub;
   late final Timer _pollTimer;
 
-  void _onPortsRefreshed(
+  Future<void> _onPortsRefreshed(
     PortsRefreshed event,
     Emitter<SerialConnectionState> emit,
-  ) {
-    final ports = _repository.listPorts();
+  ) async {
+    final ports = await _repository.listPorts();
     final names = ports.map((p) => p.name).toSet();
 
     var selected = state.selectedPort;

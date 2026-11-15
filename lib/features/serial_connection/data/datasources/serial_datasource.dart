@@ -1,9 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:flutter_libserialport/flutter_libserialport.dart';
+import 'package:usb_serial/usb_serial.dart';
 
 import '../../domain/entities/port_info.dart';
 import '../../domain/entities/serial_config.dart';
@@ -17,15 +16,15 @@ class SerialConnectionException implements Exception {
   String toString() => message;
 }
 
-/// Acceso directo a `flutter_libserialport`.
+/// Acceso directo a `usb_serial` (Android).
 class SerialDatasource {
   /// Muchas placas Arduino se reinician al abrir el puerto (señal DTR).
-  /// Esperamos un momento para no leer basura del arranque.
   static const Duration _boardResetDelay = Duration(milliseconds: 1500);
 
-  SerialPort? _port;
-  SerialPortReader? _reader;
+  UsbPort? _port;
+  String? _portName;
   StreamSubscription<String>? _subscription;
+  StreamSubscription<UsbEvent>? _usbEvents;
   bool _connected = false;
 
   final StreamController<String> _lines = StreamController<String>.broadcast();
@@ -35,59 +34,88 @@ class SerialDatasource {
   Stream<bool> get connectionChanges => _connection.stream;
   bool get isConnected => _connected;
 
-  List<PortInfo> listPorts() {
+  /// Ahora es asíncrono: usb_serial consulta el sistema Android.
+  Future<List<PortInfo>> listPorts() async {
+    final devices = await UsbSerial.listDevices();
     return [
-      for (final name in SerialPort.availablePorts)
-        PortInfo(name: name, description: _describe(name)),
+      for (final d in devices)
+        PortInfo(
+          name: d.deviceName,
+          description: d.productName ?? d.manufacturerName,
+        ),
     ];
-  }
-
-  String? _describe(String name) {
-    final port = SerialPort(name);
-    try {
-      return port.description ?? port.productName;
-    } catch (_) {
-      return null;
-    } finally {
-      port.dispose();
-    }
   }
 
   Future<void> connect(SerialConfig config) async {
     await disconnect();
 
-    final port = SerialPort(config.portName);
-    if (!port.openReadWrite()) {
-      final error = SerialPort.lastError;
-      port.dispose();
+    final devices = await UsbSerial.listDevices();
+    final device = devices
+        .where((d) => d.deviceName == config.portName)
+        .cast<UsbDevice?>()
+        .firstWhere((_) => true, orElse: () => null);
+
+    if (device == null) {
       throw SerialConnectionException(
-        _openErrorMessage(config.portName, error),
+        'No se encontró el dispositivo ${config.portName}.',
       );
     }
 
-    final portConfig = SerialPortConfig()
-      ..baudRate = config.baudRate
-      ..bits = config.dataBits
-      ..stopBits = config.stopBits
-      ..parity = SerialPortParity.none
-      ..setFlowControl(SerialPortFlowControl.none);
-    port.config = portConfig;
-    portConfig.dispose();
+    // create() solicita el permiso USB al usuario si hace falta.
+    final port = await device.create();
+    if (port == null) {
+      throw SerialConnectionException(
+        'No se pudo abrir ${config.portName}: permiso USB denegado o '
+        'dispositivo no soportado.',
+      );
+    }
+
+    if (!await port.open()) {
+      throw SerialConnectionException(
+        'No se pudo abrir ${config.portName}: error desconocido.',
+      );
+    }
+
+    await port.setDTR(true);
+    await port.setRTS(true);
+    await port.setPortParameters(
+      config.baudRate,
+      config.dataBits,
+      config.stopBits,
+      UsbPort.PARITY_NONE,
+    );
 
     await Future<void>.delayed(_boardResetDelay);
 
+    final input = port.inputStream;
+    if (input == null) {
+      await port.close();
+      throw SerialConnectionException(
+        'No se pudo leer de ${config.portName}.',
+      );
+    }
+
     _port = port;
-    _reader = SerialPortReader(port);
-    _subscription = _reader!.stream
+    _portName = config.portName;
+
+    _subscription = input
         .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen(
           _lines.add,
           onError: (Object _) => unawaited(_handleLost()),
-          onDone: _handleLost,
+          onDone: () => unawaited(_handleLost()),
           cancelOnError: true,
         );
+
+    // Detecta cable USB desconectado.
+    _usbEvents = UsbSerial.usbEventStream?.listen((event) {
+      if (event.event == UsbEvent.ACTION_USB_DETACHED &&
+          event.device?.deviceName == _portName) {
+        unawaited(_handleLost());
+      }
+    });
 
     _connected = true;
     _connection.add(true);
@@ -102,7 +130,7 @@ class SerialDatasource {
   void send(String data) {
     final port = _port;
     if (port == null || !_connected) return;
-    port.write(Uint8List.fromList(utf8.encode('$data\n')));
+    unawaited(port.write(Uint8List.fromList(utf8.encode('$data\n'))));
   }
 
   Future<void> dispose() async {
@@ -124,29 +152,16 @@ class SerialDatasource {
     await _subscription?.cancel();
     _subscription = null;
 
-    _reader?.close();
-    _reader = null;
+    await _usbEvents?.cancel();
+    _usbEvents = null;
 
     final port = _port;
     _port = null;
+    _portName = null;
     if (port != null) {
-      if (port.isOpen) port.close();
-      port.dispose();
+      try {
+        await port.close();
+      } catch (_) {}
     }
-  }
-
-  String _openErrorMessage(String name, SerialPortError? error) {
-    final detail = (error != null && error.message.isNotEmpty)
-        ? error.message
-        : 'error desconocido';
-
-    final looksLikePermissions =
-        detail.toLowerCase().contains('permission') ||
-        detail.toLowerCase().contains('denied');
-    final hint = (Platform.isLinux && looksLikePermissions)
-        ? ' Agrega tu usuario al grupo "dialout" y vuelve a iniciar sesión.'
-        : '';
-
-    return 'No se pudo abrir $name: $detail.$hint';
   }
 }

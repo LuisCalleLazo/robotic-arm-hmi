@@ -11,7 +11,7 @@ class SerialRepositoryImpl implements SerialRepository {
   final SerialDatasource _datasource;
 
   @override
-  List<PortInfo> listPorts() => _datasource.listPorts();
+  Future<List<PortInfo>> listPorts() => _datasource.listPorts();
 
   @override
   Stream<String> get lines => _datasource.lines;
