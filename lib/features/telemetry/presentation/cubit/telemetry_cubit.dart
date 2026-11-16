@@ -6,14 +6,28 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../../core/utils/ring_buffer.dart';
 import '../../../serial_connection/domain/repositories/serial_repository.dart';
 import '../../data/parsers/telemetry_parser.dart';
+import '../../data/simulators/arduino_serial_simulator.dart';
 import '../../domain/entities/sensor_reading.dart';
+
+enum TelemetrySource { serial, simulated }
+
+class TelemetryLogEntry extends Equatable {
+  const TelemetryLogEntry({required this.line, required this.source});
+
+  final String line;
+  final TelemetrySource source;
+
+  @override
+  List<Object?> get props => [line, source];
+}
 
 class TelemetryState extends Equatable {
   const TelemetryState({
     this.history = const [],
     this.latest,
     this.channels = const [],
-    this.rawLines = const [],
+    this.consoleEntries = const [],
+    this.isSimulating = false,
     this.packetsPerSecond = 0,
     this.totalPackets = 0,
     this.invalidLines = 0,
@@ -27,8 +41,12 @@ class TelemetryState extends Equatable {
   /// Canales vistos hasta ahora, en orden de aparición.
   final List<String> channels;
 
-  /// Últimas líneas crudas recibidas (para la consola).
-  final List<String> rawLines;
+  /// Últimas líneas recibidas por serial o generadas por el simulador.
+  final List<TelemetryLogEntry> consoleEntries;
+  final bool isSimulating;
+
+  List<String> get rawLines =>
+      consoleEntries.map((entry) => entry.line).toList();
 
   final double packetsPerSecond;
   final int totalPackets;
@@ -47,25 +65,32 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   TelemetryCubit({
     required SerialRepository repository,
     required TelemetryParser parser,
+    ArduinoSerialSimulator? simulator,
     int historySize = 500,
     int consoleSize = 200,
     Duration refreshInterval = const Duration(milliseconds: 33),
   }) : _parser = parser,
+       _simulator = simulator ?? ArduinoSerialSimulator(),
        _history = RingBuffer<SensorReading>(historySize),
-       _console = RingBuffer<String>(consoleSize),
+       _console = RingBuffer<TelemetryLogEntry>(consoleSize),
        super(const TelemetryState()) {
     _lineSub = repository.lines.listen(_onLine);
+    _simulationSub = _simulator.lines.listen(
+      (line) => _onLine(line, TelemetrySource.simulated),
+    );
     _timer = Timer.periodic(refreshInterval, (_) => _flush());
     _rateWatch.start();
   }
 
   final TelemetryParser _parser;
+  final ArduinoSerialSimulator _simulator;
   final RingBuffer<SensorReading> _history;
-  final RingBuffer<String> _console;
+  final RingBuffer<TelemetryLogEntry> _console;
   final List<String> _channels = [];
   final Stopwatch _rateWatch = Stopwatch();
 
   late final StreamSubscription<String> _lineSub;
+  late final StreamSubscription<String> _simulationSub;
   late final Timer _timer;
 
   int _seq = 0;
@@ -76,11 +101,11 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   double _packetsPerSecond = 0;
   bool _dirty = false;
 
-  void _onLine(String line) {
+  void _onLine(String line, [TelemetrySource source = TelemetrySource.serial]) {
     final text = line.trim();
     if (text.isEmpty) return;
 
-    _console.add(text);
+    _console.add(TelemetryLogEntry(line: text, source: source));
 
     final values = _parser.parse(text);
     if (values == null) {
@@ -96,6 +121,26 @@ class TelemetryCubit extends Cubit<TelemetryState> {
       _rateCount++;
     }
     _dirty = true;
+  }
+
+  void startSimulation() {
+    _simulator.start();
+    _dirty = true;
+    _flush();
+  }
+
+  void stopSimulation() {
+    _simulator.stop();
+    _dirty = true;
+    _flush();
+  }
+
+  void sendSimulatedCommand(String command) {
+    _simulator.sendCommand(command);
+  }
+
+  void runSimulatedRoute() {
+    _simulator.sendCommand('R');
   }
 
   void _flush() {
@@ -114,7 +159,8 @@ class TelemetryCubit extends Cubit<TelemetryState> {
         history: _history.toList(),
         latest: _history.last,
         channels: List<String>.unmodifiable(_channels),
-        rawLines: _console.toList(),
+        consoleEntries: _console.toList(),
+        isSimulating: _simulator.isRunning,
         packetsPerSecond: _packetsPerSecond,
         totalPackets: _total,
         invalidLines: _invalid,
@@ -140,6 +186,8 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   Future<void> close() async {
     _timer.cancel();
     await _lineSub.cancel();
+    await _simulationSub.cancel();
+    await _simulator.dispose();
     return super.close();
   }
 }

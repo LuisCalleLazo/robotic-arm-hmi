@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities/serial_config.dart';
+import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import '../bloc/connection_bloc.dart';
 
 class ConnectionPage extends StatelessWidget {
@@ -169,6 +170,13 @@ class ConnectionPage extends StatelessWidget {
                               )
                             : const Icon(Icons.power_settings_new),
                         label: Text(busy ? 'Conectando…' : 'Conectar'),
+                      ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () =>
+                            context.read<TelemetryCubit>().startSimulation(),
+                        icon: const Icon(Icons.developer_mode),
+                        label: const Text('Probar sin Arduino'),
                       ),
                     ],
                   );

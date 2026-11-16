@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:robotic_arm_hmi/features/view_3d/presentation/widgets/orientation_view.dart';
@@ -8,12 +10,30 @@ import '../widgets/line_chart_panel.dart';
 import '../widgets/readings_strip.dart';
 import '../widgets/serial_console_panel.dart';
 
-class DashboardPage extends StatelessWidget {
+class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
+
+  @override
+  State<DashboardPage> createState() => _DashboardPageState();
+}
+
+class _DashboardPageState extends State<DashboardPage> {
+  bool _showLogs = false;
 
   @override
   Widget build(BuildContext context) {
     final connection = context.watch<ConnectionBloc>().state;
+    final telemetry = context.watch<TelemetryCubit>().state;
+    final modeColor = telemetry.isSimulating
+        ? Colors.lightBlue
+        : connection.isConnected
+        ? Colors.green
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    final modeLabel = telemetry.isSimulating
+        ? 'Simulado'
+        : connection.isConnected
+        ? '${connection.selectedPort} · ${connection.baudRate} baud'
+        : 'Desconectado';
 
     return Scaffold(
       appBar: AppBar(
@@ -23,14 +43,8 @@ class DashboardPage extends StatelessWidget {
             const Text('HMI Arduino'),
             const SizedBox(width: 16),
             Chip(
-              avatar: const Icon(
-                Icons.circle,
-                size: 12,
-                color: Colors.greenAccent,
-              ),
-              label: Text(
-                '${connection.selectedPort} · ${connection.baudRate} baud',
-              ),
+              avatar: Icon(Icons.circle, size: 12, color: modeColor),
+              label: Text(modeLabel),
             ),
           ],
         ),
@@ -50,36 +64,68 @@ class DashboardPage extends StatelessWidget {
           const SizedBox(width: 8),
         ],
       ),
-      body: const Padding(
-        padding: EdgeInsets.all(12),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Expanded(
-              flex: 7,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ReadingsStrip(),
-                  SizedBox(height: 12),
-                  Expanded(child: LineChartPanel()),
-                ],
-              ),
-            ),
-            SizedBox(width: 12),
-            SizedBox(
-              width: 380,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: OrientationView()),
-                  SizedBox(height: 12),
-                  Expanded(child: SerialConsolePanel()),
-                ],
-              ),
-            ),
-          ],
-        ),
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final compact = constraints.maxWidth < 850;
+          final dashboard = compact
+              ? SingleChildScrollView(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    children: [
+                      const ReadingsStrip(),
+                      const SizedBox(height: 12),
+                      const SizedBox(height: 320, child: LineChartPanel()),
+                      const SizedBox(height: 12),
+                      const SizedBox(height: 360, child: OrientationView()),
+                    ],
+                  ),
+                )
+              : const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(
+                        flex: 7,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            ReadingsStrip(),
+                            SizedBox(height: 12),
+                            Expanded(child: LineChartPanel()),
+                          ],
+                        ),
+                      ),
+                      SizedBox(width: 12),
+                      SizedBox(width: 380, child: OrientationView()),
+                    ],
+                  ),
+                );
+
+          return Stack(
+            children: [
+              Positioned.fill(child: dashboard),
+              if (_showLogs)
+                Positioned(
+                  right: 16,
+                  bottom: 88,
+                  width: math.max(1, math.min(480, constraints.maxWidth - 32)),
+                  height: math.max(
+                    1,
+                    math.min(540, constraints.maxHeight - 104),
+                  ),
+                  child: SerialConsolePanel(
+                    onClose: () => setState(() => _showLogs = false),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => setState(() => _showLogs = !_showLogs),
+        icon: Icon(_showLogs ? Icons.close : Icons.terminal),
+        label: Text(_showLogs ? 'Cerrar logs' : 'Logs'),
       ),
     );
   }

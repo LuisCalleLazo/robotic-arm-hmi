@@ -53,8 +53,7 @@ class _HmiAppState extends State<HmiApp> {
   }
 }
 
-/// Muestra la pantalla de conexión o el dashboard según el estado del serial.
-/// Si el USB se desconecta, vuelve solo a la pantalla de conexión.
+/// Muestra el dashboard con una conexión serial o con el simulador activo.
 class _RootGate extends StatelessWidget {
   const _RootGate();
 
@@ -64,11 +63,17 @@ class _RootGate extends StatelessWidget {
       buildWhen: (previous, current) =>
           previous.isConnected != current.isConnected,
       builder: (context, state) {
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          child: state.isConnected
-              ? const DashboardPage(key: ValueKey('dashboard'))
-              : const ConnectionPage(key: ValueKey('connection')),
+        return BlocBuilder<TelemetryCubit, TelemetryState>(
+          buildWhen: (previous, current) =>
+              previous.isSimulating != current.isSimulating,
+          builder: (context, telemetry) {
+            return AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: state.isConnected || telemetry.isSimulating
+                  ? const DashboardPage(key: ValueKey('dashboard'))
+                  : const ConnectionPage(key: ValueKey('connection')),
+            );
+          },
         );
       },
     );
