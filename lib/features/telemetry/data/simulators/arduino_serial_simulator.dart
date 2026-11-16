@@ -3,7 +3,8 @@ import 'dart:async';
 class ArduinoSerialSimulator {
   ArduinoSerialSimulator();
 
-  static const _axes = ['Z', 'X', 'A', 'Y'];
+  static const _axes = ['X', 'Y', 'A', 'Z'];
+  static const _homingOrder = ['Z', 'X', 'A', 'Y'];
   static const _route = [
     [8000, 5500, 1200, 41000, 140],
     [8000, 5500, 1200, 0, -1],
@@ -70,7 +71,6 @@ class ArduinoSerialSimulator {
       return;
     }
     if (command == 'P' || command == 'STOP') {
-      _timer?.cancel();
       _state = 'IDLE';
       _phase = 'idle';
       _referencedAxes.clear();
@@ -98,6 +98,7 @@ class ArduinoSerialSimulator {
     }
     if (command.length == 1) {
       _moveAxis = axisIndex;
+      _referencedAxes.remove(_axes[axisIndex]);
       _state = 'HOMING';
       _setPhase('axisHoming');
       _emit('EVT,HOMING_START,${_axes[axisIndex]},0');
@@ -108,6 +109,10 @@ class ArduinoSerialSimulator {
     final target = int.tryParse(command.substring(1));
     if (target == null) {
       _emit('ERR,BAD_FORMAT');
+      return;
+    }
+    if (!_referencedAxes.contains(_axes[axisIndex])) {
+      _emit('ERR,NOT_REFERENCED,${_axes[axisIndex]}');
       return;
     }
     const limits = [30450, 11834, 3426, 47829];
@@ -127,7 +132,7 @@ class ArduinoSerialSimulator {
 
   void _startHomingAxis() {
     _state = 'HOMING';
-    _emit('EVT,HOMING_START,${_axes[_homingIndex]},0');
+    _emit('EVT,HOMING_START,${_homingOrder[_homingIndex]},0');
     _emit('STATE,HOMING');
   }
 
@@ -156,9 +161,10 @@ class ArduinoSerialSimulator {
       case 'homing':
         if (_ticks < 4) return;
         _emit(
-          'EVT,HOMING_DONE,${_axes[_homingIndex]},${1200 + _homingIndex * 170}',
+          'EVT,HOMING_DONE,${_homingOrder[_homingIndex]},'
+          '${1200 + _homingIndex * 170}',
         );
-        _referencedAxes.add(_axes[_homingIndex]);
+        _referencedAxes.add(_homingOrder[_homingIndex]);
         _homingIndex++;
         if (_homingIndex < _axes.length) {
           _startHomingAxis();

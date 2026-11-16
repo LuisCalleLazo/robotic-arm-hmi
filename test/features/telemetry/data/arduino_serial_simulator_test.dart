@@ -27,4 +27,28 @@ void main() {
 
     simulator.stop();
   });
+
+  test(
+    'STOP clears references and keeps single-axis homing available',
+    () async {
+      final simulator = ArduinoSerialSimulator();
+      final lines = <String>[];
+      simulator.lines.listen(lines.add);
+
+      simulator.start();
+      await Future<void>.delayed(Duration.zero);
+      simulator.sendCommand('P');
+      await Future<void>.delayed(Duration.zero);
+      simulator.sendCommand('X500');
+      await Future<void>.delayed(Duration.zero);
+      simulator.sendCommand('X');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(lines, contains('EVT,STOPPED'));
+      expect(lines, contains('ERR,NOT_REFERENCED,X'));
+      expect(lines, contains('EVT,HOMING_START,X,0'));
+
+      simulator.stop();
+    },
+  );
 }

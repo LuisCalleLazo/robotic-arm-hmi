@@ -4,6 +4,18 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 
+void sendRobotCommand(BuildContext context, String command) {
+  final telemetry = context.read<TelemetryCubit>();
+  if (telemetry.state.isSimulating) {
+    telemetry.sendSimulatedCommand(command);
+    return;
+  }
+
+  if (context.read<ConnectionBloc>().state.isConnected) {
+    context.read<ConnectionBloc>().add(CommandSent(command));
+  }
+}
+
 class SerialConsolePanel extends StatefulWidget {
   const SerialConsolePanel({required this.onClose, super.key});
 
@@ -14,12 +26,17 @@ class SerialConsolePanel extends StatefulWidget {
 }
 
 class _SerialConsolePanelState extends State<SerialConsolePanel> {
+  static const _axisLimits = {'X': 30450, 'Y': 11834, 'A': 3426, 'Z': 47829};
+
   final TextEditingController _controller = TextEditingController();
+  final TextEditingController _targetController = TextEditingController();
   final FocusNode _focus = FocusNode();
+  String _selectedAxis = 'X';
 
   @override
   void dispose() {
     _controller.dispose();
+    _targetController.dispose();
     _focus.dispose();
     super.dispose();
   }
@@ -28,16 +45,27 @@ class _SerialConsolePanelState extends State<SerialConsolePanel> {
     final text = _controller.text.trim();
     if (text.isEmpty) return;
 
-    final connection = context.read<ConnectionBloc>().state;
-    final telemetry = context.read<TelemetryCubit>();
-    if (connection.isConnected) {
-      context.read<ConnectionBloc>().add(CommandSent(text));
-    }
-    if (telemetry.state.isSimulating) {
-      telemetry.sendSimulatedCommand(text);
-    }
+    sendRobotCommand(context, text);
     _controller.clear();
     _focus.requestFocus();
+  }
+
+  void _moveToTarget() {
+    final target = int.tryParse(_targetController.text);
+    final maxSteps = _axisLimits[_selectedAxis]!;
+    if (target == null || target < 0 || target > maxSteps) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Ingresa un valor entre 0 y $maxSteps para $_selectedAxis.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    sendRobotCommand(context, '$_selectedAxis$target');
+    _targetController.clear();
   }
 
   @override
@@ -106,13 +134,98 @@ class _SerialConsolePanelState extends State<SerialConsolePanel> {
                         : 'Iniciar simulación',
                   ),
                 ),
-                if (telemetry.isSimulating)
-                  FilledButton.tonalIcon(
-                    onPressed: () =>
-                        context.read<TelemetryCubit>().runSimulatedRoute(),
-                    icon: const Icon(Icons.route),
-                    label: const Text('Probar ruta'),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: Text(
+                'El servo se abre y cierra durante INICIAR; no tiene comando independiente.',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 4,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                OutlinedButton(
+                  onPressed: canSend
+                      ? () => sendRobotCommand(context, 'POS')
+                      : null,
+                  child: const Text('POS'),
+                ),
+                FilledButton.tonalIcon(
+                  onPressed: canSend
+                      ? () => sendRobotCommand(context, 'INICIAR')
+                      : null,
+                  icon: const Icon(Icons.play_arrow, size: 18),
+                  label: const Text('INICIAR'),
+                ),
+                for (final axis in _axisLimits.keys)
+                  OutlinedButton(
+                    onPressed: canSend
+                        ? () => sendRobotCommand(context, axis)
+                        : null,
+                    child: Text('Home $axis'),
                   ),
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.red.shade700,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: canSend
+                      ? () => sendRobotCommand(context, 'P')
+                      : null,
+                  icon: const Icon(Icons.stop, size: 18),
+                  label: const Text('STOP'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                DropdownButton<String>(
+                  value: _selectedAxis,
+                  isDense: true,
+                  items: [
+                    for (final axis in _axisLimits.keys)
+                      DropdownMenuItem(value: axis, child: Text(axis)),
+                  ],
+                  onChanged: canSend
+                      ? (axis) {
+                          if (axis != null) {
+                            setState(() => _selectedAxis = axis);
+                          }
+                        }
+                      : null,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _targetController,
+                    enabled: canSend,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: 'Destino (0–${_axisLimits[_selectedAxis]})',
+                      border: const OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    onSubmitted: (_) => _moveToTarget(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filledTonal(
+                  tooltip: 'Mover eje',
+                  onPressed: canSend ? _moveToTarget : null,
+                  icon: const Icon(Icons.arrow_forward),
+                ),
               ],
             ),
             const SizedBox(height: 8),

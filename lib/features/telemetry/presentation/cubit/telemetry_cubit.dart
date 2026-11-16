@@ -28,6 +28,9 @@ class TelemetryState extends Equatable {
     this.channels = const [],
     this.consoleEntries = const [],
     this.isSimulating = false,
+    this.machineState,
+    this.gripperClosed = false,
+    this.routeStep,
     this.packetsPerSecond = 0,
     this.totalPackets = 0,
     this.invalidLines = 0,
@@ -44,6 +47,9 @@ class TelemetryState extends Equatable {
   /// Últimas líneas recibidas por serial o generadas por el simulador.
   final List<TelemetryLogEntry> consoleEntries;
   final bool isSimulating;
+  final String? machineState;
+  final bool gripperClosed;
+  final int? routeStep;
 
   List<String> get rawLines =>
       consoleEntries.map((entry) => entry.line).toList();
@@ -64,13 +70,12 @@ class TelemetryState extends Equatable {
 class TelemetryCubit extends Cubit<TelemetryState> {
   TelemetryCubit({
     required SerialRepository repository,
-    required TelemetryParser parser,
+    required this._parser,
     ArduinoSerialSimulator? simulator,
     int historySize = 500,
     int consoleSize = 200,
     Duration refreshInterval = const Duration(milliseconds: 33),
-  }) : _parser = parser,
-       _simulator = simulator ?? ArduinoSerialSimulator(),
+  }) : _simulator = simulator ?? ArduinoSerialSimulator(),
        _history = RingBuffer<SensorReading>(historySize),
        _console = RingBuffer<TelemetryLogEntry>(consoleSize),
        super(const TelemetryState()) {
@@ -100,12 +105,25 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   int _rateCount = 0;
   double _packetsPerSecond = 0;
   bool _dirty = false;
+  String? _machineState;
+  bool _gripperClosed = false;
+  int? _routeStep;
 
   void _onLine(String line, [TelemetrySource source = TelemetrySource.serial]) {
     final text = line.trim();
     if (text.isEmpty) return;
 
     _console.add(TelemetryLogEntry(line: text, source: source));
+    if (text.startsWith('STATE,')) {
+      _machineState = text.substring('STATE,'.length);
+    } else if (text.startsWith('EVT,SERVO,')) {
+      final angle = int.tryParse(text.substring('EVT,SERVO,'.length));
+      if (angle != null) _gripperClosed = angle > 90;
+    } else if (text.startsWith('EVT,ROUTE_STEP,')) {
+      _routeStep = int.tryParse(text.substring('EVT,ROUTE_STEP,'.length));
+    } else if (text == 'EVT,ROUTE_DONE') {
+      _routeStep = null;
+    }
 
     final values = _parser.parse(text);
     if (values == null) {
@@ -124,6 +142,9 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   }
 
   void startSimulation() {
+    _machineState = null;
+    _gripperClosed = false;
+    _routeStep = null;
     _simulator.start();
     _dirty = true;
     _flush();
@@ -161,6 +182,9 @@ class TelemetryCubit extends Cubit<TelemetryState> {
         channels: List<String>.unmodifiable(_channels),
         consoleEntries: _console.toList(),
         isSimulating: _simulator.isRunning,
+        machineState: _machineState,
+        gripperClosed: _gripperClosed,
+        routeStep: _routeStep,
         packetsPerSecond: _packetsPerSecond,
         totalPackets: _total,
         invalidLines: _invalid,
@@ -174,6 +198,9 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     _history.clear();
     _console.clear();
     _channels.clear();
+    _machineState = null;
+    _gripperClosed = false;
+    _routeStep = null;
     _total = 0;
     _invalid = 0;
     _rateCount = 0;

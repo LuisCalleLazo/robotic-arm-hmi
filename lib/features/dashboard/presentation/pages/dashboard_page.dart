@@ -8,6 +8,7 @@ import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import '../widgets/line_chart_panel.dart';
 import '../widgets/readings_strip.dart';
+import '../widgets/scara_process_panel.dart';
 import '../widgets/serial_console_panel.dart';
 
 class DashboardPage extends StatefulWidget {
@@ -23,13 +24,15 @@ class _DashboardPageState extends State<DashboardPage> {
   @override
   Widget build(BuildContext context) {
     final connection = context.watch<ConnectionBloc>().state;
-    final telemetry = context.watch<TelemetryCubit>().state;
-    final modeColor = telemetry.isSimulating
+    final isSimulating = context.select<TelemetryCubit, bool>(
+      (cubit) => cubit.state.isSimulating,
+    );
+    final modeColor = isSimulating
         ? Colors.lightBlue
         : connection.isConnected
         ? Colors.green
         : Theme.of(context).colorScheme.onSurfaceVariant;
-    final modeLabel = telemetry.isSimulating
+    final modeLabel = isSimulating
         ? 'Simulado'
         : connection.isConnected
         ? '${connection.selectedPort} · ${connection.baudRate} baud'
@@ -55,6 +58,12 @@ class _DashboardPageState extends State<DashboardPage> {
             icon: const Icon(Icons.delete_sweep_outlined),
             onPressed: () => context.read<TelemetryCubit>().clear(),
           ),
+          if (isSimulating)
+            IconButton(
+              tooltip: 'Salir de la simulación',
+              icon: const Icon(Icons.exit_to_app),
+              onPressed: () => context.read<TelemetryCubit>().stopSimulation(),
+            ),
           IconButton(
             tooltip: 'Desconectar',
             icon: const Icon(Icons.link_off),
@@ -76,7 +85,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       const SizedBox(height: 12),
                       const SizedBox(height: 320, child: LineChartPanel()),
                       const SizedBox(height: 12),
-                      const SizedBox(height: 360, child: OrientationView()),
+                      const SizedBox(height: 380, child: _RobotViewSwitcher()),
                     ],
                   ),
                 )
@@ -97,7 +106,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         ),
                       ),
                       SizedBox(width: 12),
-                      SizedBox(width: 380, child: OrientationView()),
+                      SizedBox(width: 380, child: _RobotViewSwitcher()),
                     ],
                   ),
                 );
@@ -122,13 +131,70 @@ class _DashboardPageState extends State<DashboardPage> {
           );
         },
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => setState(() => _showLogs = !_showLogs),
-        icon: Icon(_showLogs ? Icons.close : Icons.terminal),
-        label: Text(_showLogs ? 'Cerrar logs' : 'Logs'),
+      floatingActionButton: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FloatingActionButton.extended(
+            heroTag: 'robot-stop',
+            backgroundColor: Colors.red.shade700,
+            foregroundColor: Colors.white,
+            onPressed: connection.isConnected || isSimulating
+                ? () => sendRobotCommand(context, 'P')
+                : null,
+            icon: const Icon(Icons.stop),
+            label: const Text('STOP'),
+          ),
+          const SizedBox(width: 12),
+          FloatingActionButton.extended(
+            heroTag: 'serial-logs',
+            onPressed: () => setState(() => _showLogs = !_showLogs),
+            icon: Icon(_showLogs ? Icons.close : Icons.terminal),
+            label: Text(_showLogs ? 'Cerrar logs' : 'Logs'),
+          ),
+        ],
       ),
     );
   }
+}
+
+class _RobotViewSwitcher extends StatefulWidget {
+  const _RobotViewSwitcher();
+
+  @override
+  State<_RobotViewSwitcher> createState() => _RobotViewSwitcherState();
+}
+
+class _RobotViewSwitcherState extends State<_RobotViewSwitcher> {
+  bool _showOrientation = false;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      SegmentedButton<bool>(
+        segments: const [
+          ButtonSegment(
+            value: false,
+            icon: Icon(Icons.precision_manufacturing_outlined),
+            label: Text('Proceso 2D'),
+          ),
+          ButtonSegment(
+            value: true,
+            icon: Icon(Icons.threed_rotation),
+            label: Text('Orientación 3D'),
+          ),
+        ],
+        selected: {_showOrientation},
+        onSelectionChanged: (selection) =>
+            setState(() => _showOrientation = selection.first),
+      ),
+      const SizedBox(height: 8),
+      Expanded(
+        child: _showOrientation
+            ? const OrientationView()
+            : const ScaraProcessPanel(),
+      ),
+    ],
+  );
 }
 
 class _RateIndicator extends StatelessWidget {
