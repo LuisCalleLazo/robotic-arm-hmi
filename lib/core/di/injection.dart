@@ -1,5 +1,6 @@
 import 'package:get_it/get_it.dart';
 
+import '../../features/peer_to_peer/peer_injection.dart';
 import '../../features/serial_connection/data/datasources/serial_datasource.dart';
 import '../../features/serial_connection/data/repositories/serial_repository_impl.dart';
 import '../../features/serial_connection/domain/repositories/serial_repository.dart';
@@ -27,4 +28,6 @@ Future<void> configureDependencies() async {
         parser: sl<TelemetryParser>(),
       ),
     );
+
+  registerPeerToPeer(sl);
 }

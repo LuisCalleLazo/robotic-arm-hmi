@@ -1,9 +1,13 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'core/di/injection.dart';
 import 'core/theme/app_theme.dart';
 import 'features/dashboard/presentation/pages/dashboard_page.dart';
+import 'features/peer_to_peer/presentation/cubit/peer_cubit.dart';
+import 'features/peer_to_peer/presentation/screens/peer_connection_screen.dart';
 import 'features/serial_connection/domain/repositories/serial_repository.dart';
 import 'features/serial_connection/presentation/bloc/connection_bloc.dart';
 import 'features/serial_connection/presentation/pages/connection_page.dart';
@@ -22,9 +26,12 @@ class _HmiAppState extends State<HmiApp> {
   @override
   void initState() {
     super.initState();
-    // Cierra el puerto serial al cerrar la aplicación.
+    // Cierra las conexiones al cerrar la aplicación.
     _lifecycle = AppLifecycleListener(
-      onDetach: () => sl<SerialRepository>().dispose(),
+      onDetach: () {
+        unawaited(sl<PeerCubit>().disconnect());
+        sl<SerialRepository>().dispose();
+      },
     );
   }
 
@@ -42,6 +49,7 @@ class _HmiAppState extends State<HmiApp> {
       providers: [
         BlocProvider<ConnectionBloc>.value(value: sl<ConnectionBloc>()),
         BlocProvider<TelemetryCubit>.value(value: sl<TelemetryCubit>()),
+        BlocProvider<PeerCubit>.value(value: sl<PeerCubit>()),
       ],
       child: MaterialApp(
         title: 'HMI Arduino',
@@ -53,25 +61,35 @@ class _HmiAppState extends State<HmiApp> {
   }
 }
 
-/// Muestra el dashboard con una conexión serial o con el simulador activo.
+/// Primero requiere una sesión de red; después permite conexión serial o simulación.
 class _RootGate extends StatelessWidget {
   const _RootGate();
 
   @override
   Widget build(BuildContext context) {
-    return BlocBuilder<ConnectionBloc, SerialConnectionState>(
+    return BlocBuilder<PeerCubit, PeerState>(
       buildWhen: (previous, current) =>
-          previous.isConnected != current.isConnected,
-      builder: (context, state) {
-        return BlocBuilder<TelemetryCubit, TelemetryState>(
+          previous.session.isActive != current.session.isActive,
+      builder: (context, peerState) {
+        if (!peerState.session.isActive) {
+          return const PeerConnectionScreen(key: ValueKey('peer-connection'));
+        }
+
+        return BlocBuilder<ConnectionBloc, SerialConnectionState>(
           buildWhen: (previous, current) =>
-              previous.isSimulating != current.isSimulating,
-          builder: (context, telemetry) {
-            return AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
-              child: state.isConnected || telemetry.isSimulating
-                  ? const DashboardPage(key: ValueKey('dashboard'))
-                  : const ConnectionPage(key: ValueKey('connection')),
+              previous.isConnected != current.isConnected,
+          builder: (context, state) {
+            return BlocBuilder<TelemetryCubit, TelemetryState>(
+              buildWhen: (previous, current) =>
+                  previous.isSimulating != current.isSimulating,
+              builder: (context, telemetry) {
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 250),
+                  child: state.isConnected || telemetry.isSimulating
+                      ? const DashboardPage(key: ValueKey('dashboard'))
+                      : const ConnectionPage(key: ValueKey('connection')),
+                );
+              },
             );
           },
         );
