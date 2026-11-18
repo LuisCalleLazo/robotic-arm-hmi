@@ -3,6 +3,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../domain/entities/serial_config.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
+import '../../../peer_to_peer/presentation/widgets/peer_status_badge.dart';
 import '../bloc/connection_bloc.dart';
 
 class ConnectionPage extends StatelessWidget {
@@ -14,6 +15,10 @@ class ConnectionPage extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Scaffold(
+      appBar: AppBar(
+        title: const Text('Conexión serial'),
+        actions: const [PeerStatusBadge(), SizedBox(width: 8)],
+      ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 460),

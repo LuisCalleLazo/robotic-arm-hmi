@@ -2,8 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:robotic_arm_hmi/features/view_3d/presentation/widgets/orientation_view.dart';
 
+import '../../../peer_to_peer/presentation/widgets/peer_status_badge.dart';
 import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import '../widgets/line_chart_panel.dart';
@@ -52,6 +52,7 @@ class _DashboardPageState extends State<DashboardPage> {
           ],
         ),
         actions: [
+          const PeerStatusBadge(),
           const _RateIndicator(),
           IconButton(
             tooltip: 'Limpiar datos',
@@ -177,22 +178,13 @@ class _RobotViewSwitcherState extends State<_RobotViewSwitcher> {
             icon: Icon(Icons.precision_manufacturing_outlined),
             label: Text('Proceso 2D'),
           ),
-          ButtonSegment(
-            value: true,
-            icon: Icon(Icons.threed_rotation),
-            label: Text('Orientación 3D'),
-          ),
         ],
         selected: {_showOrientation},
         onSelectionChanged: (selection) =>
             setState(() => _showOrientation = selection.first),
       ),
       const SizedBox(height: 8),
-      Expanded(
-        child: _showOrientation
-            ? const OrientationView()
-            : const ScaraProcessPanel(),
-      ),
+      Expanded(child: const ScaraProcessPanel()),
     ],
   );
 }

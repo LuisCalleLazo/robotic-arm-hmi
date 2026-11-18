@@ -7,6 +7,8 @@ import 'package:usb_serial/usb_serial.dart';
 
 import '../../domain/entities/port_info.dart';
 import '../../domain/entities/serial_config.dart';
+import 'desktop_serial_connection_stub.dart'
+    if (dart.library.io) 'desktop_serial_connection_native.dart';
 
 class SerialConnectionException implements Exception {
   SerialConnectionException(this.message);
@@ -21,6 +23,7 @@ class SerialDatasource {
   static const String _webPortName = 'web:choose-device';
 
   SerialManager? _manager;
+  final DesktopSerialConnection _desktop = DesktopSerialConnection();
   UsbPort? _androidPort;
   String? _portName;
   StreamSubscription<String>? _subscription;
@@ -47,6 +50,10 @@ class SerialDatasource {
             description: device.productName ?? device.manufacturerName,
           ),
       ];
+    }
+
+    if (_isDesktop) {
+      return [for (final name in _desktop.listPorts()) PortInfo(name: name)];
     }
 
     final ports = await _serialManager.getAvailablePorts();
@@ -79,9 +86,29 @@ class SerialDatasource {
       return;
     }
 
+    if (_isDesktop) {
+      _subscription = _listenToBytes(_desktop.receiveStream);
+      try {
+        await _desktop.connect(
+          portName: config.portName,
+          baudRate: config.baudRate,
+          onLost: () => unawaited(_handleLost()),
+        );
+      } catch (_) {
+        await _teardown();
+        rethrow;
+      }
+      _portName = config.portName;
+      _connected = true;
+      _connection.add(true);
+      return;
+    }
+
     final manager = _serialManager;
     _subscription = _listenToBytes(manager.receiveStream);
-    _deviceEvents = manager.deviceEventStream.listen(_handleDeviceEvent);
+    if (kIsWeb) {
+      _deviceEvents = manager.deviceEventStream.listen(_handleDeviceEvent);
+    }
 
     late final bool connected;
     try {
@@ -123,6 +150,8 @@ class SerialDatasource {
     final androidPort = _androidPort;
     if (androidPort != null) {
       unawaited(androidPort.write(bytes));
+    } else if (_isDesktop) {
+      unawaited(_desktop.write(bytes));
     } else {
       unawaited(_serialManager.write(bytes));
     }
@@ -147,9 +176,19 @@ class SerialDatasource {
   bool get _isAndroid =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
+  bool get _isDesktop =>
+      !kIsWeb &&
+      switch (defaultTargetPlatform) {
+        TargetPlatform.windows ||
+        TargetPlatform.macOS ||
+        TargetPlatform.linux => true,
+        _ => false,
+      };
+
   SerialManager get _serialManager => _manager ??= getSerialManager();
 
   StreamSubscription<String> _listenToBytes(Stream<List<int>> bytes) => bytes
+      .cast<List<int>>()
       .transform(const Utf8Decoder(allowMalformed: true))
       .transform(const LineSplitter())
       .listen(
@@ -234,8 +273,14 @@ class SerialDatasource {
   Future<void> _handleLost() async {
     if (!_connected) return;
     _connected = false;
-    await _teardown();
-    _connection.add(false);
+    try {
+      await _teardown();
+    } on Object catch (error) {
+      debugPrint('Error al liberar el puerto serial desconectado: $error');
+      _lines.add('ERR,DISCONNECT_CLEANUP,$error');
+    } finally {
+      _connection.add(false);
+    }
   }
 
   Future<void> _teardown() async {
@@ -250,6 +295,7 @@ class SerialDatasource {
     final androidPort = _androidPort;
     _androidPort = null;
     if (androidPort != null) await androidPort.close();
+    await _desktop.disconnect();
     await _manager?.disconnect();
   }
 }
