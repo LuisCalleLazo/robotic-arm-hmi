@@ -11,6 +11,7 @@ import 'features/peer_to_peer/presentation/screens/peer_connection_screen.dart';
 import 'features/serial_connection/domain/repositories/serial_repository.dart';
 import 'features/serial_connection/presentation/bloc/connection_bloc.dart';
 import 'features/serial_connection/presentation/pages/connection_page.dart';
+import 'features/system/data/database/system_database_manager.dart';
 import 'features/telemetry/presentation/cubit/telemetry_cubit.dart';
 
 class HmiApp extends StatefulWidget {
@@ -30,6 +31,7 @@ class _HmiAppState extends State<HmiApp> {
     _lifecycle = AppLifecycleListener(
       onDetach: () {
         unawaited(sl<PeerCubit>().disconnect());
+        unawaited(sl<SystemDatabaseManager>().dispose());
         sl<SerialRepository>().dispose();
       },
     );

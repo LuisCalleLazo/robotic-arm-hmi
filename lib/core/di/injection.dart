@@ -5,6 +5,7 @@ import '../../features/serial_connection/data/datasources/serial_datasource.dart
 import '../../features/serial_connection/data/repositories/serial_repository_impl.dart';
 import '../../features/serial_connection/domain/repositories/serial_repository.dart';
 import '../../features/serial_connection/presentation/bloc/connection_bloc.dart';
+import '../../features/system/system_injection.dart';
 import '../../features/telemetry/data/parsers/telemetry_parser.dart';
 import '../../features/telemetry/presentation/cubit/telemetry_cubit.dart';
 
@@ -30,4 +31,5 @@ Future<void> configureDependencies() async {
     );
 
   registerPeerToPeer(sl);
+  registerSystem(sl);
 }
