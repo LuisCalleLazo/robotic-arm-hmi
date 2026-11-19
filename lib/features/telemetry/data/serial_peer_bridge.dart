@@ -1,0 +1,52 @@
+import 'dart:async';
+
+import '../../peer_to_peer/domain/entities/peer_entities.dart';
+import '../../peer_to_peer/domain/repositories/peer_repository.dart';
+import '../../serial_connection/domain/repositories/serial_repository.dart';
+import '../presentation/cubit/telemetry_cubit.dart';
+
+/// Uniforma el transporte de líneas seriales entre maestro y esclavos.
+class SerialPeerBridge {
+  SerialPeerBridge({
+    required SerialRepository serial,
+    required PeerRepository peer,
+    required TelemetryCubit telemetry,
+  }) : _serial = serial,
+       _peer = peer,
+       _telemetry = telemetry {
+    _serialSub = _serial.lines.listen(_onSerialLine);
+    _peerSub = _peer.messages.listen(_onPeerMessage);
+  }
+
+  final SerialRepository _serial;
+  final PeerRepository _peer;
+  final TelemetryCubit _telemetry;
+  late final StreamSubscription<String> _serialSub;
+  late final StreamSubscription<PeerMessage> _peerSub;
+
+  void _onSerialLine(String line) {
+    if (!_peer.session.isActive) return;
+    unawaited(
+      _peer.send(
+        PeerMessage(
+          type: PeerMessageType.telemetry,
+          payload: {'kind': 'serial_line', 'line': line},
+        ),
+      ),
+    );
+  }
+
+  void _onPeerMessage(PeerMessage message) {
+    if (message.type != PeerMessageType.telemetry ||
+        message.payload['kind'] != 'serial_line') {
+      return;
+    }
+    final line = message.payload['line'];
+    if (line is String) _telemetry.ingestPeerLine(line);
+  }
+
+  Future<void> dispose() async {
+    await _serialSub.cancel();
+    await _peerSub.cancel();
+  }
+}

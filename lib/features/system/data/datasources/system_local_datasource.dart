@@ -25,14 +25,26 @@ class SystemLocalDataSource {
     )..where((table) => table.id.equals(id))).getSingleOrNull();
     return row == null
         ? null
-        : SystemMachine(id: row.id, name: row.name, type: row.type);
+        : SystemMachine(
+            id: row.id,
+            name: row.name,
+            type: row.type,
+            parentMachineId: row.parentMachineId,
+          );
   }
 
   Future<List<SystemMachine>> getMachines() async {
     final db = await _databaseManager.getDatabase();
     final rows = await db.select(db.systemMachines).get();
     return rows
-        .map((row) => SystemMachine(id: row.id, name: row.name, type: row.type))
+        .map(
+          (row) => SystemMachine(
+            id: row.id,
+            name: row.name,
+            type: row.type,
+            parentMachineId: row.parentMachineId,
+          ),
+        )
         .toList();
   }
 
@@ -45,6 +57,7 @@ class SystemLocalDataSource {
             id: Value(machine.id),
             name: machine.name,
             type: machine.type,
+            parentMachineId: Value(machine.parentMachineId),
           ),
         );
   }
@@ -54,6 +67,28 @@ class SystemLocalDataSource {
     await (db.delete(
       db.systemMachines,
     )..where((table) => table.id.equals(id))).go();
+  }
+
+  Future<void> deleteMachineTree(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await db.transaction(() async {
+      final children = await (db.select(
+        db.systemMachines,
+      )..where((table) => table.parentMachineId.equals(id))).get();
+      final machineIds = [id, ...children.map((machine) => machine.id)];
+      await (db.delete(
+        db.motors,
+      )..where((table) => table.systemMachineId.isIn(machineIds))).go();
+      await (db.delete(
+        db.servos,
+      )..where((table) => table.machineId.isIn(machineIds))).go();
+      await (db.delete(
+        db.systemMachines,
+      )..where((table) => table.parentMachineId.equals(id))).go();
+      await (db.delete(
+        db.systemMachines,
+      )..where((table) => table.id.equals(id))).go();
+    });
   }
 
   Future<List<system.Process>> getProcesses() async {

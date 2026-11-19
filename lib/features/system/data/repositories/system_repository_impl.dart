@@ -27,6 +27,9 @@ class SystemRepositoryImpl implements SystemRepository {
   Future<void> deleteMachine(int id) => _dataSource.deleteMachine(id);
 
   @override
+  Future<void> deleteMachineTree(int id) => _dataSource.deleteMachineTree(id);
+
+  @override
   Future<List<system.Process>> getProcesses() => _dataSource.getProcesses();
 
   @override

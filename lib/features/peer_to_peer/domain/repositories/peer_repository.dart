@@ -40,6 +40,9 @@ abstract class PeerRepository {
   /// Esclavo: envía al maestro (los `command` requieren [PeerPermission.control]).
   Future<void> send(PeerMessage message);
 
+  /// Maestro: envía un mensaje de configuración al esclavo indicado.
+  Future<void> sendToClient(String clientId, PeerMessage message);
+
   Future<void> setClientPermission(String clientId, PeerPermission permission);
   Future<void> kickClient(String clientId);
   Future<void> disconnect();

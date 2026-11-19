@@ -111,7 +111,9 @@ class SerialConnectionState extends Equatable {
 // ────────────────────────────── Bloc ──────────────────────────────
 
 class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
-  ConnectionBloc(this._repository) : super(const SerialConnectionState()) {
+  ConnectionBloc(this._repository, {void Function(String)? onCommandSent})
+    : _onCommandSentLog = onCommandSent,
+      super(const SerialConnectionState()) {
     on<PortsRefreshed>(_onPortsRefreshed);
     on<PortSelected>(
       (event, emit) => emit(state.copyWith(selectedPort: event.name)),
@@ -137,6 +139,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
   }
 
   final SerialRepository _repository;
+  final void Function(String)? _onCommandSentLog;
   late final StreamSubscription<bool> _linkSub;
   late final Timer _pollTimer;
 
@@ -203,6 +206,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
 
   void _onCommandSent(CommandSent event, Emitter<SerialConnectionState> emit) {
     if (!state.isConnected) return;
+    _onCommandSentLog?.call(event.text);
     _repository.send(event.text);
   }
 

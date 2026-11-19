@@ -11,6 +11,7 @@ import 'data/repositories/system_repository_impl.dart';
 import 'domain/repositories/system_history_repository.dart';
 import 'domain/repositories/system_position_repository.dart';
 import 'domain/repositories/system_repository.dart';
+import 'domain/services/system_configuration_service.dart';
 
 void registerSystem(GetIt sl) {
   final databaseManager = SystemDatabaseManager(sl<PeerRepository>());
@@ -27,6 +28,12 @@ void registerSystem(GetIt sl) {
     )
     ..registerLazySingleton<SystemPositionRepository>(
       () => SystemPositionRepositoryImpl(sl<SystemLocalDataSource>()),
+    )
+    ..registerLazySingleton<SystemConfigurationService>(
+      () => SystemConfigurationService(
+        peer: sl<PeerRepository>(),
+        system: sl<SystemRepository>(),
+      ),
     );
   unawaited(databaseManager.start());
 }

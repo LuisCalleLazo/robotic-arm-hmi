@@ -9,7 +9,7 @@ import '../../data/parsers/telemetry_parser.dart';
 import '../../data/simulators/arduino_serial_simulator.dart';
 import '../../domain/entities/sensor_reading.dart';
 
-enum TelemetrySource { serial, simulated }
+enum TelemetrySource { serial, serialSent, simulated }
 
 class TelemetryLogEntry extends Equatable {
   const TelemetryLogEntry({required this.line, required this.source});
@@ -158,6 +158,20 @@ class TelemetryCubit extends Cubit<TelemetryState> {
 
   void sendSimulatedCommand(String command) {
     _simulator.sendCommand(command);
+  }
+
+  void recordSent(String line) {
+    final text = line.trim();
+    if (text.isEmpty) return;
+    _console.add(
+      TelemetryLogEntry(line: text, source: TelemetrySource.serialSent),
+    );
+    _dirty = true;
+    _flush();
+  }
+
+  void ingestPeerLine(String line) {
+    _onLine(line, TelemetrySource.serial);
   }
 
   void runSimulatedRoute() {

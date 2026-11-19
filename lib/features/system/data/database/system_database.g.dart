@@ -36,8 +36,22 @@ class $SystemMachinesTable extends SystemMachines
     type: DriftSqlType.string,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _parentMachineIdMeta = const VerificationMeta(
+    'parentMachineId',
+  );
   @override
-  List<GeneratedColumn> get $columns => [id, name, type];
+  late final GeneratedColumn<int> parentMachineId = GeneratedColumn<int>(
+    'parent_machine_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES system_machines (id)',
+    ),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [id, name, type, parentMachineId];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -69,6 +83,15 @@ class $SystemMachinesTable extends SystemMachines
     } else if (isInserting) {
       context.missing(_typeMeta);
     }
+    if (data.containsKey('parent_machine_id')) {
+      context.handle(
+        _parentMachineIdMeta,
+        parentMachineId.isAcceptableOrUnknown(
+          data['parent_machine_id']!,
+          _parentMachineIdMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -90,6 +113,10 @@ class $SystemMachinesTable extends SystemMachines
         DriftSqlType.string,
         data['${effectivePrefix}type'],
       )!,
+      parentMachineId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}parent_machine_id'],
+      ),
     );
   }
 
@@ -104,10 +131,12 @@ class SystemMachineRow extends DataClass
   final int id;
   final String name;
   final String type;
+  final int? parentMachineId;
   const SystemMachineRow({
     required this.id,
     required this.name,
     required this.type,
+    this.parentMachineId,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -115,6 +144,9 @@ class SystemMachineRow extends DataClass
     map['id'] = Variable<int>(id);
     map['name'] = Variable<String>(name);
     map['type'] = Variable<String>(type);
+    if (!nullToAbsent || parentMachineId != null) {
+      map['parent_machine_id'] = Variable<int>(parentMachineId);
+    }
     return map;
   }
 
@@ -123,6 +155,9 @@ class SystemMachineRow extends DataClass
       id: Value(id),
       name: Value(name),
       type: Value(type),
+      parentMachineId: parentMachineId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(parentMachineId),
     );
   }
 
@@ -135,6 +170,7 @@ class SystemMachineRow extends DataClass
       id: serializer.fromJson<int>(json['id']),
       name: serializer.fromJson<String>(json['name']),
       type: serializer.fromJson<String>(json['type']),
+      parentMachineId: serializer.fromJson<int?>(json['parentMachineId']),
     );
   }
   @override
@@ -144,20 +180,31 @@ class SystemMachineRow extends DataClass
       'id': serializer.toJson<int>(id),
       'name': serializer.toJson<String>(name),
       'type': serializer.toJson<String>(type),
+      'parentMachineId': serializer.toJson<int?>(parentMachineId),
     };
   }
 
-  SystemMachineRow copyWith({int? id, String? name, String? type}) =>
-      SystemMachineRow(
-        id: id ?? this.id,
-        name: name ?? this.name,
-        type: type ?? this.type,
-      );
+  SystemMachineRow copyWith({
+    int? id,
+    String? name,
+    String? type,
+    Value<int?> parentMachineId = const Value.absent(),
+  }) => SystemMachineRow(
+    id: id ?? this.id,
+    name: name ?? this.name,
+    type: type ?? this.type,
+    parentMachineId: parentMachineId.present
+        ? parentMachineId.value
+        : this.parentMachineId,
+  );
   SystemMachineRow copyWithCompanion(SystemMachinesCompanion data) {
     return SystemMachineRow(
       id: data.id.present ? data.id.value : this.id,
       name: data.name.present ? data.name.value : this.name,
       type: data.type.present ? data.type.value : this.type,
+      parentMachineId: data.parentMachineId.present
+          ? data.parentMachineId.value
+          : this.parentMachineId,
     );
   }
 
@@ -166,46 +213,53 @@ class SystemMachineRow extends DataClass
     return (StringBuffer('SystemMachineRow(')
           ..write('id: $id, ')
           ..write('name: $name, ')
-          ..write('type: $type')
+          ..write('type: $type, ')
+          ..write('parentMachineId: $parentMachineId')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, name, type);
+  int get hashCode => Object.hash(id, name, type, parentMachineId);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is SystemMachineRow &&
           other.id == this.id &&
           other.name == this.name &&
-          other.type == this.type);
+          other.type == this.type &&
+          other.parentMachineId == this.parentMachineId);
 }
 
 class SystemMachinesCompanion extends UpdateCompanion<SystemMachineRow> {
   final Value<int> id;
   final Value<String> name;
   final Value<String> type;
+  final Value<int?> parentMachineId;
   const SystemMachinesCompanion({
     this.id = const Value.absent(),
     this.name = const Value.absent(),
     this.type = const Value.absent(),
+    this.parentMachineId = const Value.absent(),
   });
   SystemMachinesCompanion.insert({
     this.id = const Value.absent(),
     required String name,
     required String type,
+    this.parentMachineId = const Value.absent(),
   }) : name = Value(name),
        type = Value(type);
   static Insertable<SystemMachineRow> custom({
     Expression<int>? id,
     Expression<String>? name,
     Expression<String>? type,
+    Expression<int>? parentMachineId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (name != null) 'name': name,
       if (type != null) 'type': type,
+      if (parentMachineId != null) 'parent_machine_id': parentMachineId,
     });
   }
 
@@ -213,11 +267,13 @@ class SystemMachinesCompanion extends UpdateCompanion<SystemMachineRow> {
     Value<int>? id,
     Value<String>? name,
     Value<String>? type,
+    Value<int?>? parentMachineId,
   }) {
     return SystemMachinesCompanion(
       id: id ?? this.id,
       name: name ?? this.name,
       type: type ?? this.type,
+      parentMachineId: parentMachineId ?? this.parentMachineId,
     );
   }
 
@@ -233,6 +289,9 @@ class SystemMachinesCompanion extends UpdateCompanion<SystemMachineRow> {
     if (type.present) {
       map['type'] = Variable<String>(type.value);
     }
+    if (parentMachineId.present) {
+      map['parent_machine_id'] = Variable<int>(parentMachineId.value);
+    }
     return map;
   }
 
@@ -241,7 +300,8 @@ class SystemMachinesCompanion extends UpdateCompanion<SystemMachineRow> {
     return (StringBuffer('SystemMachinesCompanion(')
           ..write('id: $id, ')
           ..write('name: $name, ')
-          ..write('type: $type')
+          ..write('type: $type, ')
+          ..write('parentMachineId: $parentMachineId')
           ..write(')'))
         .toString();
   }
@@ -3619,12 +3679,14 @@ typedef $$SystemMachinesTableCreateCompanionBuilder =
       Value<int> id,
       required String name,
       required String type,
+      Value<int?> parentMachineId,
     });
 typedef $$SystemMachinesTableUpdateCompanionBuilder =
     SystemMachinesCompanion Function({
       Value<int> id,
       Value<String> name,
       Value<String> type,
+      Value<int?> parentMachineId,
     });
 
 final class $$SystemMachinesTableReferences
@@ -3639,6 +3701,24 @@ final class $$SystemMachinesTableReferences
     super.$_table,
     super.$_typedResult,
   );
+
+  static $SystemMachinesTable _parentMachineIdTable(_$SystemDatabase db) => db
+      .systemMachines
+      .createAlias('system_machines__parent_machine_id__system_machines__id');
+
+  $$SystemMachinesTableProcessedTableManager? get parentMachineId {
+    final $_column = $_itemColumn<int>('parent_machine_id');
+    if ($_column == null) return null;
+    final manager = $$SystemMachinesTableTableManager(
+      $_db,
+      $_db.systemMachines,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_parentMachineIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
 
   static MultiTypedResultKey<$MotorsTable, List<MotorRow>> _motorsRefsTable(
     _$SystemDatabase db,
@@ -3723,6 +3803,29 @@ class $$SystemMachinesTableFilterComposer
     column: $table.type,
     builder: (column) => ColumnFilters(column),
   );
+
+  $$SystemMachinesTableFilterComposer get parentMachineId {
+    final $$SystemMachinesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.parentMachineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableFilterComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   Expression<bool> motorsRefs(
     Expression<bool> Function($$MotorsTableFilterComposer f) f,
@@ -3823,6 +3926,29 @@ class $$SystemMachinesTableOrderingComposer
     column: $table.type,
     builder: (column) => ColumnOrderings(column),
   );
+
+  $$SystemMachinesTableOrderingComposer get parentMachineId {
+    final $$SystemMachinesTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.parentMachineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableOrderingComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 }
 
 class $$SystemMachinesTableAnnotationComposer
@@ -3842,6 +3968,29 @@ class $$SystemMachinesTableAnnotationComposer
 
   GeneratedColumn<String> get type =>
       $composableBuilder(column: $table.type, builder: (column) => column);
+
+  $$SystemMachinesTableAnnotationComposer get parentMachineId {
+    final $$SystemMachinesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.parentMachineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   Expression<T> motorsRefs<T extends Object>(
     Expression<T> Function($$MotorsTableAnnotationComposer a) f,
@@ -3933,6 +4082,7 @@ class $$SystemMachinesTableTableManager
           (SystemMachineRow, $$SystemMachinesTableReferences),
           SystemMachineRow,
           PrefetchHooks Function({
+            bool parentMachineId,
             bool motorsRefs,
             bool servosRefs,
             bool systemPositionsRefs,
@@ -3956,16 +4106,24 @@ class $$SystemMachinesTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<String> name = const Value.absent(),
                 Value<String> type = const Value.absent(),
-              }) => SystemMachinesCompanion(id: id, name: name, type: type),
+                Value<int?> parentMachineId = const Value.absent(),
+              }) => SystemMachinesCompanion(
+                id: id,
+                name: name,
+                type: type,
+                parentMachineId: parentMachineId,
+              ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
                 required String name,
                 required String type,
+                Value<int?> parentMachineId = const Value.absent(),
               }) => SystemMachinesCompanion.insert(
                 id: id,
                 name: name,
                 type: type,
+                parentMachineId: parentMachineId,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -3977,6 +4135,7 @@ class $$SystemMachinesTableTableManager
               .toList(),
           prefetchHooksCallback:
               ({
+                parentMachineId = false,
                 motorsRefs = false,
                 servosRefs = false,
                 systemPositionsRefs = false,
@@ -3988,7 +4147,40 @@ class $$SystemMachinesTableTableManager
                     if (servosRefs) db.servos,
                     if (systemPositionsRefs) db.systemPositions,
                   ],
-                  addJoins: null,
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (parentMachineId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.parentMachineId,
+                                    referencedTable:
+                                        $$SystemMachinesTableReferences
+                                            ._parentMachineIdTable(db),
+                                    referencedColumn:
+                                        $$SystemMachinesTableReferences
+                                            ._parentMachineIdTable(db)
+                                            .id,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (motorsRefs)
@@ -4072,6 +4264,7 @@ typedef $$SystemMachinesTableProcessedTableManager =
       (SystemMachineRow, $$SystemMachinesTableReferences),
       SystemMachineRow,
       PrefetchHooks Function({
+        bool parentMachineId,
         bool motorsRefs,
         bool servosRefs,
         bool systemPositionsRefs,

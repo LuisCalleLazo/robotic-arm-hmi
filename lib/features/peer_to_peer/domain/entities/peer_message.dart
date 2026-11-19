@@ -2,6 +2,7 @@ enum PeerMessageType {
   welcome,
   permission,
   command,
+  configuration,
   telemetry,
   kicked,
   error;

@@ -8,6 +8,8 @@ class SystemMachines extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
   TextColumn get type => text()();
+  IntColumn get parentMachineId =>
+      integer().nullable().references(SystemMachines, #id)();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
@@ -153,5 +155,15 @@ class SystemDatabase extends _$SystemDatabase {
       );
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+    onCreate: (Migrator m) async => m.createAll(),
+    onUpgrade: (Migrator m, int from, int to) async {
+      if (from < 2) {
+        await m.addColumn(systemMachines, systemMachines.parentMachineId);
+      }
+    },
+  );
 }

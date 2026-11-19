@@ -11,6 +11,7 @@ abstract interface class SystemRepository {
   Future<List<SystemMachine>> getMachines();
   Future<void> saveMachine(SystemMachine machine);
   Future<void> deleteMachine(int id);
+  Future<void> deleteMachineTree(int id);
 
   Future<List<Process>> getProcesses();
   Future<void> saveProcess(Process process);

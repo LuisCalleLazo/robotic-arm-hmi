@@ -5,13 +5,13 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'core/di/injection.dart';
 import 'core/theme/app_theme.dart';
-import 'features/dashboard/presentation/pages/dashboard_page.dart';
 import 'features/peer_to_peer/presentation/cubit/peer_cubit.dart';
 import 'features/peer_to_peer/presentation/screens/peer_connection_screen.dart';
 import 'features/serial_connection/domain/repositories/serial_repository.dart';
 import 'features/serial_connection/presentation/bloc/connection_bloc.dart';
-import 'features/serial_connection/presentation/pages/connection_page.dart';
 import 'features/system/data/database/system_database_manager.dart';
+import 'features/system/domain/services/system_configuration_service.dart';
+import 'features/system/presentation/pages/system_shell_page.dart';
 import 'features/telemetry/presentation/cubit/telemetry_cubit.dart';
 
 class HmiApp extends StatefulWidget {
@@ -31,6 +31,7 @@ class _HmiAppState extends State<HmiApp> {
     _lifecycle = AppLifecycleListener(
       onDetach: () {
         unawaited(sl<PeerCubit>().disconnect());
+        unawaited(sl<SystemConfigurationService>().dispose());
         unawaited(sl<SystemDatabaseManager>().dispose());
         sl<SerialRepository>().dispose();
       },
@@ -63,7 +64,7 @@ class _HmiAppState extends State<HmiApp> {
   }
 }
 
-/// Primero requiere una sesión de red; después permite conexión serial o simulación.
+/// Primero requiere una sesión de red; después muestra el sistema completo.
 class _RootGate extends StatelessWidget {
   const _RootGate();
 
@@ -77,24 +78,7 @@ class _RootGate extends StatelessWidget {
           return const PeerConnectionScreen(key: ValueKey('peer-connection'));
         }
 
-        return BlocBuilder<ConnectionBloc, SerialConnectionState>(
-          buildWhen: (previous, current) =>
-              previous.isConnected != current.isConnected,
-          builder: (context, state) {
-            return BlocBuilder<TelemetryCubit, TelemetryState>(
-              buildWhen: (previous, current) =>
-                  previous.isSimulating != current.isSimulating,
-              builder: (context, telemetry) {
-                return AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  child: state.isConnected || telemetry.isSimulating
-                      ? const DashboardPage(key: ValueKey('dashboard'))
-                      : const ConnectionPage(key: ValueKey('connection')),
-                );
-              },
-            );
-          },
-        );
+        return const SystemShellPage(key: ValueKey('system-shell'));
       },
     );
   }

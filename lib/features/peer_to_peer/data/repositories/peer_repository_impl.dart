@@ -13,9 +13,9 @@ class PeerRepositoryImpl implements PeerRepository {
     required PeerServerDataSource server,
     required PeerClientDataSource client,
     required PeerDiscoveryDataSource discovery,
-  })  : _server = server,
-        _client = client,
-        _discovery = discovery;
+  }) : _server = server,
+       _client = client,
+       _discovery = discovery;
 
   final PeerServerDataSource _server;
   final PeerClientDataSource _client;
@@ -67,8 +67,7 @@ class PeerRepositoryImpl implements PeerRepository {
   @override
   Stream<PeerMasterInfo> discoverMasters({
     Duration timeout = const Duration(seconds: 3),
-  }) =>
-      _discovery.discover(timeout: timeout);
+  }) => _discovery.discover(timeout: timeout);
 
   // ------------------------------------------------------------ MAESTRO
 
@@ -81,28 +80,34 @@ class PeerRepositoryImpl implements PeerRepository {
   }) async {
     await _teardown();
     if (!isMasterSupported) {
-      _emit(const PeerSession(
-        role: PeerRole.master,
-        status: PeerConnectionStatus.error,
-        error: 'El modo maestro no está disponible en web.',
-      ));
+      _emit(
+        const PeerSession(
+          role: PeerRole.master,
+          status: PeerConnectionStatus.error,
+          error: 'El modo maestro no está disponible en web.',
+        ),
+      );
       return;
     }
     if (!verifyMasterPassword(password)) {
-      _emit(const PeerSession(
-        role: PeerRole.master,
-        status: PeerConnectionStatus.error,
-        error: 'Contraseña incorrecta.',
-      ));
+      _emit(
+        const PeerSession(
+          role: PeerRole.master,
+          status: PeerConnectionStatus.error,
+          error: 'Contraseña incorrecta.',
+        ),
+      );
       return;
     }
     final masterName = _cleanName(name, 'Maestro');
     _defaultPermission = defaultPermission;
-    _emit(PeerSession(
-      role: PeerRole.master,
-      status: PeerConnectionStatus.connecting,
-      deviceName: masterName,
-    ));
+    _emit(
+      PeerSession(
+        role: PeerRole.master,
+        status: PeerConnectionStatus.connecting,
+        deviceName: masterName,
+      ),
+    );
     try {
       _serverSub = _server.events.listen(_onServerEvent);
       final bound = await _server.start(port);
@@ -112,22 +117,26 @@ class PeerRepositoryImpl implements PeerRepository {
       } catch (_) {
         // La búsqueda por nombre es opcional: el maestro sigue funcionando por IP.
       }
-      _emit(PeerSession(
-        role: PeerRole.master,
-        status: PeerConnectionStatus.listening,
-        deviceName: masterName,
-        port: bound,
-        addresses: addresses,
-      ));
+      _emit(
+        PeerSession(
+          role: PeerRole.master,
+          status: PeerConnectionStatus.listening,
+          deviceName: masterName,
+          port: bound,
+          addresses: addresses,
+        ),
+      );
     } catch (e) {
       await _teardown();
-      _emit(PeerSession(
-        role: PeerRole.master,
-        status: PeerConnectionStatus.error,
-        deviceName: masterName,
-        port: port,
-        error: 'No se pudo abrir el puerto $port: $e',
-      ));
+      _emit(
+        PeerSession(
+          role: PeerRole.master,
+          status: PeerConnectionStatus.error,
+          deviceName: masterName,
+          port: port,
+          error: 'No se pudo abrir el puerto $port: $e',
+        ),
+      );
     }
   }
 
@@ -138,10 +147,13 @@ class PeerRepositoryImpl implements PeerRepository {
         if (type == null) {
           _sendTo(
             id,
-            PeerMessage(type: PeerMessageType.error, payload: {
-              'code': 'machine_required',
-              'message': 'Debes indicar el tipo de máquina.',
-            }),
+            PeerMessage(
+              type: PeerMessageType.error,
+              payload: {
+                'code': 'machine_required',
+                'message': 'Debes indicar el tipo de máquina.',
+              },
+            ),
           );
           _server.kick(id);
           return;
@@ -156,11 +168,14 @@ class PeerRepositoryImpl implements PeerRepository {
         _clients[id] = client;
         _sendTo(
           id,
-          PeerMessage(type: PeerMessageType.welcome, payload: {
-            'clientId': id,
-            'permission': client.permission.name,
-            'masterName': _session.deviceName,
-          }),
+          PeerMessage(
+            type: PeerMessageType.welcome,
+            payload: {
+              'clientId': id,
+              'permission': client.permission.name,
+              'masterName': _session.deviceName,
+            },
+          ),
         );
         _updateClients();
       case ClientDisconnected(:final id):
@@ -174,25 +189,41 @@ class PeerRepositoryImpl implements PeerRepository {
     final client = _clients[id];
     final msg = PeerMessageModel.decode(raw, senderId: id);
     if (client == null || msg == null) return;
+    if (msg.type == PeerMessageType.configuration) {
+      _messagesCtrl.add(msg);
+      return;
+    }
     if (msg.type != PeerMessageType.command) return;
     if (client.permission.canSendCommands) {
       _messagesCtrl.add(msg);
     } else {
       _sendTo(
         id,
-        PeerMessage(type: PeerMessageType.error, payload: {
-          'code': 'permission_denied',
-          'message': 'No tienes permiso de control.',
-        }),
+        PeerMessage(
+          type: PeerMessageType.error,
+          payload: {
+            'code': 'permission_denied',
+            'message': 'No tienes permiso de control.',
+          },
+        ),
       );
     }
   }
 
   /// La lista de esclavos y sus máquinas solo la ve el maestro: no se difunde.
-  void _updateClients() => _emit(_session.copyWith(clients: _clients.values.toList()));
+  void _updateClients() =>
+      _emit(_session.copyWith(clients: _clients.values.toList()));
 
   void _sendTo(String id, PeerMessage m) =>
       _server.sendTo(id, PeerMessageModel.encode(m));
+
+  @override
+  Future<void> sendToClient(String clientId, PeerMessage message) async {
+    if (!_session.isMaster || !_clients.containsKey(clientId)) {
+      throw const PeerException('El cliente no está conectado al maestro.');
+    }
+    _sendTo(clientId, message);
+  }
 
   @override
   Future<void> setClientPermission(
@@ -231,42 +262,48 @@ class PeerRepositoryImpl implements PeerRepository {
     await _teardown();
     final gen = _gen;
     final deviceName = _cleanName(name, 'Esclavo');
-    _emit(PeerSession(
-      role: PeerRole.slave,
-      status: PeerConnectionStatus.connecting,
-      deviceName: deviceName,
-      machine: machine,
-      host: host,
-      port: port,
-    ));
+    _emit(
+      PeerSession(
+        role: PeerRole.slave,
+        status: PeerConnectionStatus.connecting,
+        deviceName: deviceName,
+        machine: machine,
+        host: host,
+        port: port,
+      ),
+    );
     final welcome = Completer<void>();
     welcome.future.ignore();
     _welcome = welcome;
     try {
       _clientMsgSub = _client.messages.listen(_onMasterMessage);
       _clientCloseSub = _client.onClosed.listen((_) => _onSocketClosed());
-      await _client.connect(Uri(
-        scheme: 'ws',
-        host: host,
-        port: port,
-        path: '/ws',
-        queryParameters: {'name': deviceName, 'machine': machine.id},
-      ));
+      await _client.connect(
+        Uri(
+          scheme: 'ws',
+          host: host,
+          port: port,
+          path: '/ws',
+          queryParameters: {'name': deviceName, 'machine': machine.id},
+        ),
+      );
       await welcome.future.timeout(const Duration(seconds: 5));
     } catch (e) {
       if (gen != _gen) return; // cancelado por el usuario
       await _teardown();
-      _emit(PeerSession(
-        role: PeerRole.slave,
-        status: PeerConnectionStatus.error,
-        deviceName: deviceName,
-        machine: machine,
-        host: host,
-        port: port,
-        error: e is PeerException
-            ? e.message
-            : 'No se pudo conectar a $host:$port',
-      ));
+      _emit(
+        PeerSession(
+          role: PeerRole.slave,
+          status: PeerConnectionStatus.error,
+          deviceName: deviceName,
+          machine: machine,
+          host: host,
+          port: port,
+          error: e is PeerException
+              ? e.message
+              : 'No se pudo conectar a $host:$port',
+        ),
+      );
     }
   }
 
@@ -275,26 +312,34 @@ class PeerRepositoryImpl implements PeerRepository {
     if (msg == null) return;
     switch (msg.type) {
       case PeerMessageType.welcome:
-        _emit(_session.copyWith(
-          status: PeerConnectionStatus.connected,
-          clientId: msg.payload['clientId'] as String?,
-          masterName: msg.payload['masterName'] as String?,
-          permission:
-              PeerPermission.fromName(msg.payload['permission'] as String?),
-          clearError: true,
-        ));
+        _emit(
+          _session.copyWith(
+            status: PeerConnectionStatus.connected,
+            clientId: msg.payload['clientId'] as String?,
+            masterName: msg.payload['masterName'] as String?,
+            permission: PeerPermission.fromName(
+              msg.payload['permission'] as String?,
+            ),
+            clearError: true,
+          ),
+        );
         final w = _welcome;
         if (w != null && !w.isCompleted) w.complete();
       case PeerMessageType.permission:
-        _emit(_session.copyWith(
-          permission:
-              PeerPermission.fromName(msg.payload['permission'] as String?),
-        ));
+        _emit(
+          _session.copyWith(
+            permission: PeerPermission.fromName(
+              msg.payload['permission'] as String?,
+            ),
+          ),
+        );
       case PeerMessageType.kicked:
-        _emit(_session.copyWith(
-          status: PeerConnectionStatus.error,
-          error: 'El maestro te expulsó de la sesión.',
-        ));
+        _emit(
+          _session.copyWith(
+            status: PeerConnectionStatus.error,
+            error: 'El maestro te expulsó de la sesión.',
+          ),
+        );
       default:
         _messagesCtrl.add(msg);
     }
@@ -307,10 +352,12 @@ class PeerRepositoryImpl implements PeerRepository {
       return;
     }
     if (_session.isSlave && _session.status == PeerConnectionStatus.connected) {
-      _emit(_session.copyWith(
-        status: PeerConnectionStatus.disconnected,
-        error: 'Se perdió la conexión con el maestro.',
-      ));
+      _emit(
+        _session.copyWith(
+          status: PeerConnectionStatus.disconnected,
+          error: 'Se perdió la conexión con el maestro.',
+        ),
+      );
     }
   }
 
@@ -318,7 +365,8 @@ class PeerRepositoryImpl implements PeerRepository {
 
   @override
   Future<void> send(PeerMessage message) async {
-    if (_session.isMaster && _session.status == PeerConnectionStatus.listening) {
+    if (_session.isMaster &&
+        _session.status == PeerConnectionStatus.listening) {
       _server.broadcast(PeerMessageModel.encode(message));
       return;
     }
