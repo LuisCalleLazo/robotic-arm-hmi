@@ -135,6 +135,9 @@ void main() {
     expect((await repository.getProcesses()).single.machineId, 1);
     expect((await repository.getProcessMotors(40)).single.speed, 2000);
     expect((await repository.getProcessServos(40)).single.speed, 60);
+    expect(await repository.hasProcessMotorHistory(50), isFalse);
+    await repository.deleteProcessMotor(50);
+    expect(await repository.getProcessMotors(40), isEmpty);
   });
 }
 

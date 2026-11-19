@@ -69,8 +69,11 @@ class SystemRepositoryImpl implements SystemRepository {
       _dataSource.saveProcessMotor(processMotor);
 
   @override
-  Future<void> deleteProcessMotor(int id) =>
-      _dataSource.deleteProcessMotor(id);
+  Future<void> deleteProcessMotor(int id) => _dataSource.deleteProcessMotor(id);
+
+  @override
+  Future<bool> hasProcessMotorHistory(int id) =>
+      _dataSource.hasProcessMotorHistory(id);
 
   @override
   Future<List<ProcessServo>> getProcessServos(int processId) =>
@@ -81,6 +84,5 @@ class SystemRepositoryImpl implements SystemRepository {
       _dataSource.saveProcessServo(processServo);
 
   @override
-  Future<void> deleteProcessServo(int id) =>
-      _dataSource.deleteProcessServo(id);
+  Future<void> deleteProcessServo(int id) => _dataSource.deleteProcessServo(id);
 }

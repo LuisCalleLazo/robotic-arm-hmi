@@ -276,6 +276,14 @@ class SystemLocalDataSource {
     )..where((table) => table.id.equals(id))).go();
   }
 
+  Future<bool> hasProcessMotorHistory(int id) async {
+    final db = await _databaseManager.getDatabase();
+    final query = db.select(db.processHistoricMotors)
+      ..where((table) => table.processMotorId.equals(id))
+      ..limit(1);
+    return (await query.get()).isNotEmpty;
+  }
+
   Future<List<ProcessServo>> getProcessServos(int processId) async {
     final db = await _databaseManager.getDatabase();
     final rows =

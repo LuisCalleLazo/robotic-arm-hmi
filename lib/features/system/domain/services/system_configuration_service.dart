@@ -516,9 +516,17 @@ class SystemConfigurationService {
   ) async {
     final existingMotors = await _system.getProcessMotors(process.id);
     final motorIds = motors.map((item) => item.id).toSet();
-    for (final item in existingMotors.where(
+    final removedMotors = existingMotors.where(
       (item) => !motorIds.contains(item.id),
-    )) {
+    );
+    for (final item in removedMotors) {
+      if (await _system.hasProcessMotorHistory(item.id)) {
+        throw StateError(
+          'No se puede eliminar el movimiento ${item.name}: tiene históricos asociados.',
+        );
+      }
+    }
+    for (final item in removedMotors) {
       await _system.deleteProcessMotor(item.id);
     }
     final existingServos = await _system.getProcessServos(process.id);
@@ -548,12 +556,14 @@ class SystemConfigurationService {
         previousMotors ?? _localSlaveProcessMotors[processId] ?? const [];
     final existingServos =
         previousServos ?? _localSlaveProcessServos[processId] ?? const [];
-    return motors.map((item) => item.id).toSet().containsAll(
-          existingMotors.map((item) => item.id),
-        ) &&
-        servos.map((item) => item.id).toSet().containsAll(
-          existingServos.map((item) => item.id),
-        );
+    return motors
+            .map((item) => item.id)
+            .toSet()
+            .containsAll(existingMotors.map((item) => item.id)) &&
+        servos
+            .map((item) => item.id)
+            .toSet()
+            .containsAll(existingServos.map((item) => item.id));
   }
 
   Map<String, dynamic> _processPayload(Process process) => {

@@ -201,9 +201,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       return;
     }
     final activePlans = _plans
-        .where(
-          (plan) => plan.motors.isNotEmpty || plan.servos.isNotEmpty,
-        )
+        .where((plan) => plan.motors.isNotEmpty || plan.servos.isNotEmpty)
         .toList();
     if (activePlans.isEmpty) return;
     if (!_serialReady) {
@@ -1155,7 +1153,8 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
         existingServos: _plan.servos,
         editingMotor: editingMotor,
         editingServo: editingServo,
-        allowTypeChange: _peerIsMaster,
+        allowTypeChange:
+            _peerIsMaster || (editingMotor == null && editingServo == null),
       ),
     );
     if (action == null) return;
@@ -1193,7 +1192,11 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       );
     }
 
-    await _saveMovements(motors, servos, isEdit: editingMotor != null || editingServo != null);
+    await _saveMovements(
+      motors,
+      servos,
+      isEdit: editingMotor != null || editingServo != null,
+    );
   }
 
   bool get _peerIsMaster => GetIt.I<PeerRepository>().session.isMaster;
@@ -1207,9 +1210,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Eliminar movimiento'),
-        content: const Text(
-          '¿Quieres eliminar este movimiento del proceso?',
-        ),
+        content: const Text('¿Quieres eliminar este movimiento del proceso?'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1227,6 +1228,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       _plan.motors.where((item) => item.id != motor?.id).toList(),
       _plan.servos.where((item) => item.id != servo?.id).toList(),
       isEdit: true,
+      isDelete: true,
     );
   }
 
@@ -1234,6 +1236,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
     List<ProcessMotors> motors,
     List<ProcessServo> servos, {
     required bool isEdit,
+    bool isDelete = false,
   }) async {
     setState(() => _saving = true);
     try {
@@ -1253,7 +1256,11 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            isEdit ? 'Movimiento actualizado.' : 'Movimiento agregado al proceso.',
+            isDelete
+                ? 'Movimiento eliminado.'
+                : isEdit
+                ? 'Movimiento actualizado.'
+                : 'Movimiento agregado al proceso.',
           ),
         ),
       );
