@@ -44,6 +44,8 @@ class Servos extends Table {
 @DataClassName('SensorRow')
 class Sensors extends Table {
   IntColumn get id => integer()();
+  IntColumn get machineId =>
+      integer().nullable().references(SystemMachines, #id)();
   TextColumn get key => text()();
   TextColumn get name => text()();
 
@@ -56,6 +58,8 @@ class Processes extends Table {
   IntColumn get id => integer()();
   TextColumn get name => text()();
   IntColumn get order => integer()();
+  IntColumn get machineId =>
+      integer().nullable().references(SystemMachines, #id)();
   IntColumn get activationSensorId =>
       integer().nullable().references(Sensors, #id)();
 
@@ -71,6 +75,7 @@ class ProcessMotors extends Table {
   TextColumn get name => text()();
   IntColumn get order => integer()();
   RealColumn get steps => real()();
+  RealColumn get speed => real().withDefault(const Constant(5000))();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
@@ -84,6 +89,7 @@ class ProcessServos extends Table {
   TextColumn get name => text()();
   IntColumn get order => integer()();
   RealColumn get openValue => real()();
+  RealColumn get speed => real().withDefault(const Constant(60))();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
@@ -155,7 +161,7 @@ class SystemDatabase extends _$SystemDatabase {
       );
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -163,6 +169,21 @@ class SystemDatabase extends _$SystemDatabase {
     onUpgrade: (Migrator m, int from, int to) async {
       if (from < 2) {
         await m.addColumn(systemMachines, systemMachines.parentMachineId);
+      }
+      if (from < 3) {
+        await m.addColumn(sensors, sensors.machineId);
+        await m.addColumn(processMotors, processMotors.speed);
+        await m.addColumn(processServos, processServos.speed);
+        await customStatement(
+          'UPDATE process_motors '
+          'SET speed = (SELECT speed FROM motors '
+          'WHERE motors.id = process_motors.motor_id) '
+          'WHERE EXISTS (SELECT 1 FROM motors '
+          'WHERE motors.id = process_motors.motor_id)',
+        );
+      }
+      if (from < 4) {
+        await m.addColumn(processes, processes.machineId);
       }
     },
   );

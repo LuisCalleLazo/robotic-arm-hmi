@@ -193,6 +193,10 @@ class PeerRepositoryImpl implements PeerRepository {
       _messagesCtrl.add(msg);
       return;
     }
+    if (msg.type == PeerMessageType.telemetry) {
+      _messagesCtrl.add(msg);
+      return;
+    }
     if (msg.type != PeerMessageType.command) return;
     if (client.permission.canSendCommands) {
       _messagesCtrl.add(msg);

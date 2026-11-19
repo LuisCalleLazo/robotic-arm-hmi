@@ -1,8 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
+import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
+import '../../../peer_to_peer/domain/entities/peer_role.dart';
+import '../../../peer_to_peer/domain/entities/peer_session.dart';
 import '../../domain/entities/machine_configuration.dart';
 import '../../domain/entities/motor.dart';
+import '../../domain/entities/process.dart';
 import '../../domain/entities/process_motors.dart';
 import '../../domain/entities/process_servo.dart';
 import '../../domain/entities/sensor.dart';
@@ -26,18 +32,41 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
   List<Sensor> _sensors = const [];
   List<ProcessMotors> _processMotors = const [];
   List<ProcessServo> _processServos = const [];
+  List<Process> _processes = const [];
   SystemMachine? _selected;
   bool _loading = true;
+  StreamSubscription<PeerSession>? _peerSubscription;
+  PeerRole? _loadedRole;
 
   SystemRepository get _repository => GetIt.I<SystemRepository>();
+  bool get _isSlave => GetIt.I<PeerRepository>().session.isSlave;
 
   @override
   void initState() {
     super.initState();
+    final peer = GetIt.I<PeerRepository>();
+    _loadedRole = peer.session.role;
+    _peerSubscription = peer.sessionStream.listen((session) {
+      if (session.role == _loadedRole) return;
+      _loadedRole = session.role;
+      _reload();
+    });
     _reload();
   }
 
+  @override
+  void dispose() {
+    _peerSubscription?.cancel();
+    super.dispose();
+  }
+
   Future<void> _reload() async {
+    if (_isSlave) {
+      _applySlaveConfiguration(
+        GetIt.I<SystemConfigurationService>().localSlaveConfiguration,
+      );
+      return;
+    }
     try {
       final machines = await _repository.getMachines();
       final motors = await _repository.getMotors();
@@ -61,6 +90,7 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
         _sensors = sensors;
         _processMotors = processMotors;
         _processServos = processServos;
+        _processes = processes;
         _selected = _selected == null
             ? (_machines.isEmpty ? null : _machines.first)
             : _machines.where((item) => item.id == _selected!.id).firstOrNull;
@@ -74,12 +104,35 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
     }
   }
 
+  void _applySlaveConfiguration(MachineConfiguration? configuration) {
+    if (!mounted) return;
+    final machine = configuration?.machine;
+    setState(() {
+      _allMachines = configuration == null
+          ? const []
+          : [configuration.machine, ...configuration.components];
+      _machines = machine == null ? const [] : [machine];
+      _motors = configuration?.motors ?? const [];
+      _servos = configuration?.servos ?? const [];
+      _sensors = configuration?.sensors ?? const [];
+      _processMotors = const [];
+      _processServos = const [];
+      _processes = const [];
+      _selected = machine;
+      _loading = false;
+    });
+  }
+
   Future<void> _openEditor([SystemMachine? machine]) async {
+    final slaveConfiguration = _isSlave
+        ? GetIt.I<SystemConfigurationService>().localSlaveConfiguration
+        : null;
     final components = machine == null
         ? <SystemMachine>[]
-        : (await _repository.getMachines())
-              .where((item) => item.parentMachineId == machine.id)
-              .toList();
+        : (slaveConfiguration?.components ??
+              (await _repository.getMachines())
+                  .where((item) => item.parentMachineId == machine.id)
+                  .toList());
     final result = await showDialog<MachineConfiguration>(
       context: context,
       builder: (_) => _MachineEditorDialog(
@@ -87,20 +140,38 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
         components: components,
         motors: machine == null
             ? const []
-            : _motors
-                  .where((item) => item.systemMachineId == machine.id)
-                  .toList(),
+            : (slaveConfiguration?.motors ??
+                  _motors
+                      .where((item) => item.systemMachineId == machine.id)
+                      .toList()),
         servos: machine == null
             ? const []
-            : _servos.where((item) => item.machineId == machine.id).toList(),
-        sensors: machine == null ? const [] : _sensors,
+            : (slaveConfiguration?.servos ??
+                  _servos
+                      .where((item) => item.machineId == machine.id)
+                      .toList()),
+        sensors: machine == null
+            ? const []
+            : (slaveConfiguration?.sensors ??
+                  _sensors
+                      .where(
+                        (sensor) =>
+                            sensor.machineId == machine.id ||
+                            sensor.machineId == null,
+                      )
+                      .toList()),
+        allowDelete: !_isSlave,
       ),
     );
     if (result == null) return;
     try {
       await GetIt.I<SystemConfigurationService>().saveMachine(result);
       _message('Máquina guardada correctamente.');
-      await _reload();
+      if (_isSlave) {
+        _applySlaveConfiguration(result);
+      } else {
+        await _reload();
+      }
     } catch (error) {
       _message('$error');
     }
@@ -113,7 +184,11 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
           .where((item) => item.parentMachineId == machine.id)
           .map((item) => item.id),
     };
-    return _motors.any((item) => ids.contains(item.systemMachineId)) &&
+    return _processes.any(
+          (process) =>
+              process.machineId != null && ids.contains(process.machineId),
+        ) ||
+        _motors.any((item) => ids.contains(item.systemMachineId)) &&
             _processMotors.any(
               (item) => _motors
                   .where((motor) => motor.id == item.motorId)
@@ -124,6 +199,12 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
               (item) => _servos
                   .where((servo) => servo.id == item.servoId)
                   .any((servo) => ids.contains(servo.machineId)),
+            ) ||
+        _sensors.any((item) => ids.contains(item.machineId)) &&
+            _processes.any(
+              (process) => _sensors
+                  .where((sensor) => sensor.id == process.activationSensorId)
+                  .any((sensor) => ids.contains(sensor.machineId)),
             );
   }
 
@@ -165,7 +246,9 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
         title: const Text('Máquinas'),
         actions: [
           FilledButton.icon(
-            onPressed: () => _openEditor(),
+            onPressed: _isSlave && _machines.isNotEmpty
+                ? null
+                : () => _openEditor(),
             icon: const Icon(Icons.add),
             label: const Text('Nueva máquina'),
           ),
@@ -226,15 +309,16 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
                             onPressed: () => _openEditor(selected),
                             icon: const Icon(Icons.edit),
                           ),
-                          IconButton(
-                            tooltip: _isLinked(selected)
-                                ? 'Enlazada a procesos'
-                                : 'Eliminar',
-                            onPressed: _isLinked(selected)
-                                ? null
-                                : () => _delete(selected),
-                            icon: const Icon(Icons.delete_outline),
-                          ),
+                          if (!_isSlave)
+                            IconButton(
+                              tooltip: _isLinked(selected)
+                                  ? 'Enlazada a procesos'
+                                  : 'Eliminar',
+                              onPressed: _isLinked(selected)
+                                  ? null
+                                  : () => _delete(selected),
+                              icon: const Icon(Icons.delete_outline),
+                            ),
                         ],
                       ),
                       Text('Componentes de la máquina'),
@@ -273,6 +357,11 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
                       _detailSection(
                         'Sensores',
                         _sensors
+                            .where(
+                              (item) =>
+                                  item.machineId == selected.id ||
+                                  item.machineId == null,
+                            )
                             .map(
                               (item) => ListTile(
                                 leading: const Icon(
@@ -322,7 +411,11 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
       _allMachines.where((item) => item.parentMachineId == machine.id).length +
       _motors.where((item) => item.systemMachineId == machine.id).length +
       _servos.where((item) => item.machineId == machine.id).length +
-      _sensors.length;
+      _sensors
+          .where(
+            (item) => item.machineId == machine.id || item.machineId == null,
+          )
+          .length;
 
   Widget _detailSection(String title, List<Widget> children) => Card(
     child: ExpansionTile(
@@ -342,6 +435,7 @@ class _MachineEditorDialog extends StatefulWidget {
     required this.motors,
     required this.servos,
     required this.sensors,
+    required this.allowDelete,
   });
 
   final SystemMachine? machine;
@@ -349,6 +443,7 @@ class _MachineEditorDialog extends StatefulWidget {
   final List<Motor> motors;
   final List<Servo> servos;
   final List<Sensor> sensors;
+  final bool allowDelete;
 
   @override
   State<_MachineEditorDialog> createState() => _MachineEditorDialogState();
@@ -457,7 +552,8 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
   Future<void> _editSensor([Sensor? sensor]) async {
     final value = await showDialog<Sensor>(
       context: context,
-      builder: (_) => _SensorDialog(initial: sensor),
+      builder: (_) =>
+          _SensorDialog(initial: sensor, machineId: widget.machine?.id),
     );
     if (value == null || !_keyAvailable(value.key, sensor?.id, _sensors))
       return;
@@ -523,7 +619,16 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
             ),
           )
           .toList(),
-      sensors: _sensors,
+      sensors: _sensors
+          .map(
+            (item) => Sensor(
+              id: item.id,
+              machineId: id,
+              key: item.key,
+              name: item.name,
+            ),
+          )
+          .toList(),
       servos: _servos
           .map(
             (item) => Servo(
@@ -601,10 +706,13 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
                 ),
                 title: Text(item.name),
                 subtitle: Text(item.type),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => setState(() => _components.remove(item)),
-                ),
+                trailing: widget.allowDelete
+                    ? IconButton(
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () =>
+                            setState(() => _components.remove(item)),
+                      )
+                    : null,
               ),
             const Divider(),
             _addRow('Motores', _motors.length, _editMotor),
@@ -616,7 +724,9 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
                 subtitle:
                     'Sensores: ${item.keySensorLeft ?? '-'} / ${item.keySensorRight ?? '-'} · Velocidad: ${item.speed}',
                 onEdit: () => _editMotor(item),
-                onDelete: () => setState(() => _motors.remove(item)),
+                onDelete: widget.allowDelete
+                    ? () => setState(() => _motors.remove(item))
+                    : null,
               ),
             ),
             _addRow('Sensores', _sensors.length, _editSensor),
@@ -627,7 +737,9 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
                 title: item.key,
                 subtitle: item.name,
                 onEdit: () => _editSensor(item),
-                onDelete: () => setState(() => _sensors.remove(item)),
+                onDelete: widget.allowDelete
+                    ? () => setState(() => _sensors.remove(item))
+                    : null,
               ),
             ),
             _addRow('Servos', _servos.length, _editServo),
@@ -638,7 +750,9 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
                 title: item.key,
                 subtitle: 'Apertura máxima: ${item.maxOpen}',
                 onEdit: () => _editServo(item),
-                onDelete: () => setState(() => _servos.remove(item)),
+                onDelete: widget.allowDelete
+                    ? () => setState(() => _servos.remove(item))
+                    : null,
               ),
             ),
           ],
@@ -676,7 +790,7 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
     required String title,
     required String subtitle,
     required VoidCallback onEdit,
-    required VoidCallback onDelete,
+    required VoidCallback? onDelete,
   }) => ListTile(
     leading: Icon(icon, color: color),
     title: Text(title),
@@ -688,11 +802,12 @@ class _MachineEditorDialogState extends State<_MachineEditorDialog> {
           onPressed: onEdit,
           icon: const Icon(Icons.edit_outlined),
         ),
-        IconButton(
-          tooltip: 'Eliminar',
-          onPressed: onDelete,
-          icon: const Icon(Icons.delete_outline),
-        ),
+        if (onDelete != null)
+          IconButton(
+            tooltip: 'Eliminar',
+            onPressed: onDelete,
+            icon: const Icon(Icons.delete_outline),
+          ),
       ],
     ),
   );
@@ -750,12 +865,14 @@ class _MotorDialogState extends State<_MotorDialog> {
     final maxLeft = _optionalNumber(_maxLeft.text);
     if (key.isEmpty ||
         speed == null ||
-        speed <= 0 ||
         !speed.isFinite ||
+        speed.truncateToDouble() != speed ||
+        speed < 100 ||
+        speed > 10000 ||
         (_maxRight.text.trim().isNotEmpty && maxRight == null) ||
         (_maxLeft.text.trim().isNotEmpty && maxLeft == null)) {
       _error(
-        'Ingresa una clave, velocidad positiva y límites de movimiento '
+        'Ingresa una clave, velocidad de 100 a 10000 y límites de movimiento '
         'enteros válidos.',
       );
       return;
@@ -839,7 +956,7 @@ class _MotorDialogState extends State<_MotorDialog> {
       controller: controller,
       maxLength: maxLength,
       keyboardType: number
-          ? TextInputType.numberWithOptions(decimal: !signed, signed: signed)
+          ? TextInputType.numberWithOptions(signed: signed)
           : null,
       decoration: InputDecoration(
         labelText: label,
@@ -937,9 +1054,10 @@ class _ServoDialogState extends State<_ServoDialog> {
 }
 
 class _SensorDialog extends StatefulWidget {
-  const _SensorDialog({this.initial});
+  const _SensorDialog({this.initial, this.machineId});
 
   final Sensor? initial;
+  final int? machineId;
 
   @override
   State<_SensorDialog> createState() => _SensorDialogState();
@@ -966,10 +1084,10 @@ class _SensorDialogState extends State<_SensorDialog> {
   void _save() {
     final key = _key.text.trim();
     final name = _name.text.trim();
-    if (key.isEmpty || key.length > 3 || name.isEmpty) {
+    if (key.isEmpty || name.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('El sensor requiere key de 1-3 caracteres y nombre.'),
+          content: Text('El sensor requiere una key y un nombre.'),
         ),
       );
       return;
@@ -978,6 +1096,7 @@ class _SensorDialogState extends State<_SensorDialog> {
       context,
       Sensor(
         id: widget.initial?.id ?? DateTime.now().microsecondsSinceEpoch,
+        machineId: widget.machineId,
         key: key,
         name: name,
       ),
@@ -992,7 +1111,6 @@ class _SensorDialogState extends State<_SensorDialog> {
       children: [
         TextField(
           controller: _key,
-          maxLength: 3,
           decoration: const InputDecoration(
             labelText: 'Key del sensor',
             border: OutlineInputBorder(),

@@ -6,7 +6,9 @@ import '../entities/machine_configuration.dart';
 import '../entities/process.dart';
 import '../entities/process_motors.dart';
 import '../entities/process_servo.dart';
+import '../entities/system_machine.dart';
 import '../repositories/system_repository.dart';
+import 'arduino_process_command_builder.dart';
 
 class SystemConfigurationService {
   SystemConfigurationService({
@@ -21,8 +23,23 @@ class SystemConfigurationService {
   final PeerRepository _peer;
   final SystemRepository _system;
   final Map<String, int> _machineByClient = {};
+  final Map<String, MachineConfiguration> _configurationByClient = {};
+  final Map<int, Process> _localSlaveProcesses = {};
+  final Map<int, List<ProcessMotors>> _localSlaveProcessMotors = {};
+  final Map<int, List<ProcessServo>> _localSlaveProcessServos = {};
   late final StreamSubscription<PeerMessage> _messageSub;
   late final StreamSubscription<PeerSession> _sessionSub;
+
+  MachineConfiguration? get localSlaveConfiguration =>
+      _configurationByClient['local'];
+  List<Process> get localSlaveProcesses =>
+      List.unmodifiable(_localSlaveProcesses.values);
+
+  List<ProcessMotors> localSlaveProcessMotors(int processId) =>
+      List.unmodifiable(_localSlaveProcessMotors[processId] ?? const []);
+
+  List<ProcessServo> localSlaveProcessServos(int processId) =>
+      List.unmodifiable(_localSlaveProcessServos[processId] ?? const []);
 
   void _onSession(PeerSession session) {
     if (!session.isActive) {
@@ -41,9 +58,16 @@ class SystemConfigurationService {
     final error = MachineConfigurationValidator.validate(configuration);
     if (error != null) throw StateError(error);
     if (_peer.session.isSlave) {
+      final previous = _configurationByClient['local'];
       if (_machineByClient['local'] != null &&
           _machineByClient['local'] != configuration.machine.id) {
         throw StateError('Un esclavo solo puede administrar una máquina.');
+      }
+      if (previous != null &&
+          !_preservesConfiguredItems(previous, configuration)) {
+        throw StateError(
+          'Un esclavo no puede eliminar máquinas o componentes.',
+        );
       }
       await _peer.send(
         PeerMessage(
@@ -52,6 +76,7 @@ class SystemConfigurationService {
         ),
       );
       _machineByClient['local'] = configuration.machine.id;
+      _configurationByClient['local'] = configuration;
       return;
     }
     _ensureMaster();
@@ -63,9 +88,8 @@ class SystemConfigurationService {
     required List<ProcessMotors> motors,
     required List<ProcessServo> servos,
   }) async {
-    if (process.name.trim().isEmpty) {
-      throw StateError('El nombre del proceso es obligatorio.');
-    }
+    final error = await _validateProcessConfiguration(process, motors, servos);
+    if (error != null) throw StateError(error);
     final payload = {
       'kind': 'process',
       'process': {
@@ -73,6 +97,7 @@ class SystemConfigurationService {
         'name': process.name,
         'order': process.order,
         'activationSensorId': process.activationSensorId,
+        'machineId': process.machineId,
       },
       'motors': motors
           .map(
@@ -83,6 +108,7 @@ class SystemConfigurationService {
               'name': item.name,
               'order': item.order,
               'steps': item.steps,
+              'speed': item.speed,
             },
           )
           .toList(),
@@ -95,18 +121,45 @@ class SystemConfigurationService {
               'name': item.name,
               'order': item.order,
               'openValue': item.openValue,
+              'speed': item.speed,
             },
           )
           .toList(),
     };
     if (_peer.session.isSlave) {
+      if (!_preservesProcessMovements(process.id, motors, servos)) {
+        throw StateError('El esclavo no puede eliminar movimientos.');
+      }
       await _peer.send(
         PeerMessage(type: PeerMessageType.configuration, payload: payload),
       );
+      _localSlaveProcesses[process.id] = process;
+      _localSlaveProcessMotors[process.id] = List.of(motors);
+      _localSlaveProcessServos[process.id] = List.of(servos);
       return;
     }
     _ensureMaster();
     await _saveProcess(process, motors, servos);
+  }
+
+  Future<void> saveProcessDefinition(Process process) async {
+    final error = await _validateProcessDefinition(process);
+    if (error != null) throw StateError(error);
+    if (_peer.session.isSlave) {
+      await _peer.send(
+        PeerMessage(
+          type: PeerMessageType.configuration,
+          payload: {
+            'kind': 'process_definition',
+            'process': _processPayload(process),
+          },
+        ),
+      );
+      _localSlaveProcesses[process.id] = process;
+      return;
+    }
+    _ensureMaster();
+    await _system.saveProcess(process);
   }
 
   Future<void> _onPeerMessage(PeerMessage message) async {
@@ -115,6 +168,10 @@ class SystemConfigurationService {
       return;
     }
     final kind = message.payload['kind'];
+    if (kind == 'process_definition') {
+      await _onProcessDefinitionMessage(message);
+      return;
+    }
     if (kind == 'process') {
       await _onProcessMessage(message);
       return;
@@ -131,29 +188,34 @@ class SystemConfigurationService {
       return;
     }
     final error = MachineConfigurationValidator.validate(configuration);
+    final previous =
+        _configurationByClient[clientId] ??
+        await _loadExistingConfiguration(configuration.machine.id);
+    final deletionError =
+        previous != null && !_preservesConfiguredItems(previous, configuration)
+        ? 'Un esclavo no puede eliminar máquinas o componentes.'
+        : null;
     if (error != null ||
+        deletionError != null ||
         (_machineByClient.containsKey(clientId) &&
             _machineByClient[clientId] != configuration.machine.id)) {
       await _reject(
         clientId,
-        error ?? 'Un esclavo solo puede administrar una máquina.',
+        error ??
+            deletionError ??
+            'Un esclavo solo puede administrar una máquina.',
       );
       return;
     }
     await _saveLocal(configuration);
     _machineByClient[clientId] = configuration.machine.id;
+    _configurationByClient[clientId] = configuration;
   }
 
   Future<void> _onProcessMessage(PeerMessage message) async {
     final raw = message.payload['process'];
     if (raw is! Map) return;
-    final process = Process(
-      id: _int(raw['id']),
-      name: '${raw['name'] ?? ''}',
-      order: _int(raw['order']),
-      activationSensorId: _nullableInt(raw['activationSensorId']),
-    );
-    if (process.name.trim().isEmpty) return;
+    final process = _processFromPayload(raw);
     final motors = _mapList(message.payload['motors'])
         .map(
           (item) => ProcessMotors(
@@ -163,6 +225,7 @@ class SystemConfigurationService {
             name: '${item['name'] ?? ''}',
             order: _int(item['order']),
             steps: _double(item['steps']),
+            speed: _double(item['speed'], 5000),
           ),
         )
         .toList();
@@ -175,10 +238,217 @@ class SystemConfigurationService {
             name: '${item['name'] ?? ''}',
             order: _int(item['order']),
             openValue: _double(item['openValue']),
+            speed: _double(item['speed'], 60),
           ),
         )
         .toList();
+    final error = await _validateProcessConfiguration(process, motors, servos);
+    if (error != null) {
+      final senderId = message.senderId;
+      if (senderId != null) await _reject(senderId, error);
+      return;
+    }
+    final existingMotors = await _system.getProcessMotors(process.id);
+    final existingServos = await _system.getProcessServos(process.id);
+    if (!_preservesProcessMovements(
+      process.id,
+      motors,
+      servos,
+      previousMotors: existingMotors,
+      previousServos: existingServos,
+    )) {
+      final senderId = message.senderId;
+      if (senderId != null) {
+        await _reject(senderId, 'El esclavo no puede eliminar movimientos.');
+      }
+      return;
+    }
     await _saveProcess(process, motors, servos);
+  }
+
+  Future<void> _onProcessDefinitionMessage(PeerMessage message) async {
+    final raw = message.payload['process'];
+    if (raw is! Map) return;
+    final process = _processFromPayload(raw);
+    final error = await _validateProcessDefinition(process);
+    if (error != null) {
+      final senderId = message.senderId;
+      if (senderId != null) await _reject(senderId, error);
+      return;
+    }
+    await _system.saveProcess(process);
+  }
+
+  Future<String?> _validateProcessDefinition(Process process) async {
+    if (process.name.trim().isEmpty || process.order < 0) {
+      return 'El proceso requiere un nombre y un orden válido.';
+    }
+    final machineId = process.machineId;
+    if (machineId == null) return 'Selecciona la máquina del proceso.';
+    if (_peer.session.isSlave) {
+      final configuration = _configurationByClient['local'];
+      if (configuration == null || configuration.machine.id != machineId) {
+        return 'El proceso debe pertenecer a la máquina del esclavo.';
+      }
+      if (process.activationSensorId != null &&
+          !configuration.sensors.any(
+            (sensor) => sensor.id == process.activationSensorId,
+          )) {
+        return 'El sensor debe pertenecer a la máquina seleccionada.';
+      }
+      return null;
+    }
+    final machines = await _system.getMachines();
+    if (!machines.any((machine) => machine.id == machineId)) {
+      return 'La máquina seleccionada ya no existe.';
+    }
+    final machineIds = _machineIds(machines, machineId);
+    final sensorId = process.activationSensorId;
+    if (sensorId != null) {
+      final sensors = await _system.getSensors();
+      final sensor = sensors.where((item) => item.id == sensorId).firstOrNull;
+      if (sensor == null ||
+          (sensor.machineId != null &&
+              !machineIds.contains(sensor.machineId))) {
+        return 'El sensor debe pertenecer a la máquina seleccionada.';
+      }
+    }
+    return null;
+  }
+
+  Future<String?> _validateProcessConfiguration(
+    Process process,
+    List<ProcessMotors> motors,
+    List<ProcessServo> servos,
+  ) async {
+    if (process.name.trim().isEmpty || process.order < 0) {
+      return 'El proceso requiere un nombre y un orden válido.';
+    }
+    if (motors.isEmpty && servos.isEmpty) {
+      return 'El proceso debe contener al menos un movimiento.';
+    }
+    if (!motors.any((item) => item.order == 0) &&
+        !servos.any((item) => item.order == 0)) {
+      return 'El proceso debe iniciar con un movimiento de orden 0.';
+    }
+    if (motors.any(
+      (item) =>
+          item.processId != process.id ||
+          item.order < 0 ||
+          !item.steps.isFinite ||
+          item.steps.truncateToDouble() != item.steps ||
+          !item.speed.isFinite ||
+          item.speed.truncateToDouble() != item.speed ||
+          item.speed < 100 ||
+          item.speed > 10000,
+    )) {
+      return 'Los movimientos de motor requieren pasos enteros y velocidad de 100 a 10000.';
+    }
+    if (servos.any(
+      (item) =>
+          item.processId != process.id ||
+          item.order < 0 ||
+          !item.openValue.isFinite ||
+          item.openValue.truncateToDouble() != item.openValue ||
+          item.openValue < 0 ||
+          item.openValue > 180 ||
+          !item.speed.isFinite ||
+          item.speed.truncateToDouble() != item.speed ||
+          item.speed < 0 ||
+          item.speed > 720,
+    )) {
+      return 'Los servos requieren ángulo entero de 0 a 180 y velocidad de 0 a 720.';
+    }
+    if (_peer.session.isSlave) {
+      final configuration = _configurationByClient['local'];
+      if (configuration == null ||
+          configuration.machine.id != process.machineId) {
+        return 'El proceso debe pertenecer a la máquina del esclavo.';
+      }
+      if (process.activationSensorId != null &&
+          !configuration.sensors.any(
+            (sensor) => sensor.id == process.activationSensorId,
+          )) {
+        return 'El sensor de activación no existe en la máquina del esclavo.';
+      }
+      if (motors.any(
+        (item) =>
+            !configuration.motors.any((motor) => motor.id == item.motorId),
+      )) {
+        return 'El proceso referencia un motor que no pertenece a la máquina.';
+      }
+      if (servos.any(
+        (item) =>
+            !configuration.servos.any((servo) => servo.id == item.servoId),
+      )) {
+        return 'El proceso referencia un servo que no pertenece a la máquina.';
+      }
+    } else if (_peer.session.isMaster) {
+      final machines = await _system.getMachines();
+      if (process.machineId != null &&
+          !machines.any((machine) => machine.id == process.machineId)) {
+        return 'La máquina del proceso ya no existe.';
+      }
+      final machineIds = process.machineId == null
+          ? null
+          : _machineIds(machines, process.machineId!);
+      if (process.machineId != null && machineIds!.isEmpty) {
+        return 'La máquina del proceso ya no existe.';
+      }
+      final sensors = await _system.getSensors();
+      if (process.activationSensorId != null) {
+        final sensor = sensors
+            .where((item) => item.id == process.activationSensorId)
+            .firstOrNull;
+        if (sensor == null) return 'El sensor de activación no existe.';
+        if (process.machineId != null &&
+            sensor.machineId != null &&
+            !machineIds!.contains(sensor.machineId)) {
+          return 'El sensor debe pertenecer a la máquina del proceso.';
+        }
+      }
+      final availableMotors = await _system.getMotors();
+      final motorById = {for (final motor in availableMotors) motor.id: motor};
+      if (motors.any((item) => !motorById.containsKey(item.motorId))) {
+        return 'El proceso referencia un motor que no existe.';
+      }
+      if (process.machineId != null &&
+          motors.any(
+            (item) =>
+                !machineIds!.contains(motorById[item.motorId]!.systemMachineId),
+          )) {
+        return 'Los motores deben pertenecer a la máquina del proceso.';
+      }
+      final availableServos = await _system.getServos();
+      final servoById = {for (final servo in availableServos) servo.id: servo};
+      if (servos.any((item) => !servoById.containsKey(item.servoId))) {
+        return 'El proceso referencia un servo que no existe.';
+      }
+      if (process.machineId != null &&
+          servos.any(
+            (item) => !machineIds!.contains(servoById[item.servoId]!.machineId),
+          )) {
+        return 'Los servos deben pertenecer a la máquina del proceso.';
+      }
+      final seenCommands = <(int, String)>{};
+      for (final item in motors) {
+        final key = ArduinoProcessCommandBuilder.commandKey(
+          motorById[item.motorId]!.key,
+        ).toUpperCase();
+        if (!seenCommands.add((item.order, key))) {
+          return 'No se puede ordenar el mismo actuador dos veces en un paso.';
+        }
+      }
+      for (final item in servos) {
+        final key = ArduinoProcessCommandBuilder.commandKey(
+          servoById[item.servoId]!.key,
+        ).toUpperCase();
+        if (!seenCommands.add((item.order, key))) {
+          return 'No se puede ordenar el mismo actuador dos veces en un paso.';
+        }
+      }
+    }
+    return null;
   }
 
   Future<void> _reject(String clientId, String message) => _peer.sendToClient(
@@ -216,11 +486,48 @@ class SystemConfigurationService {
     }
   }
 
+  Future<MachineConfiguration?> _loadExistingConfiguration(
+    int machineId,
+  ) async {
+    final machine = await _system.getMachine(machineId);
+    if (machine == null) return null;
+    final machines = await _system.getMachines();
+    return MachineConfiguration(
+      machine: machine,
+      components: machines
+          .where((item) => item.parentMachineId == machineId)
+          .toList(),
+      motors: (await _system.getMotors())
+          .where((item) => item.systemMachineId == machineId)
+          .toList(),
+      sensors: (await _system.getSensors())
+          .where((item) => item.machineId == machineId)
+          .toList(),
+      servos: (await _system.getServos())
+          .where((item) => item.machineId == machineId)
+          .toList(),
+    );
+  }
+
   Future<void> _saveProcess(
     Process process,
     List<ProcessMotors> motors,
     List<ProcessServo> servos,
   ) async {
+    final existingMotors = await _system.getProcessMotors(process.id);
+    final motorIds = motors.map((item) => item.id).toSet();
+    for (final item in existingMotors.where(
+      (item) => !motorIds.contains(item.id),
+    )) {
+      await _system.deleteProcessMotor(item.id);
+    }
+    final existingServos = await _system.getProcessServos(process.id);
+    final servoIds = servos.map((item) => item.id).toSet();
+    for (final item in existingServos.where(
+      (item) => !servoIds.contains(item.id),
+    )) {
+      await _system.deleteProcessServo(item.id);
+    }
     await _system.saveProcess(process);
     for (final motor in motors) {
       await _system.saveProcessMotor(motor);
@@ -228,6 +535,73 @@ class SystemConfigurationService {
     for (final servo in servos) {
       await _system.saveProcessServo(servo);
     }
+  }
+
+  bool _preservesProcessMovements(
+    int processId,
+    List<ProcessMotors> motors,
+    List<ProcessServo> servos, {
+    List<ProcessMotors>? previousMotors,
+    List<ProcessServo>? previousServos,
+  }) {
+    final existingMotors =
+        previousMotors ?? _localSlaveProcessMotors[processId] ?? const [];
+    final existingServos =
+        previousServos ?? _localSlaveProcessServos[processId] ?? const [];
+    return motors.map((item) => item.id).toSet().containsAll(
+          existingMotors.map((item) => item.id),
+        ) &&
+        servos.map((item) => item.id).toSet().containsAll(
+          existingServos.map((item) => item.id),
+        );
+  }
+
+  Map<String, dynamic> _processPayload(Process process) => {
+    'id': process.id,
+    'name': process.name,
+    'order': process.order,
+    'activationSensorId': process.activationSensorId,
+    'machineId': process.machineId,
+  };
+
+  Process _processFromPayload(Map raw) => Process(
+    id: _int(raw['id']),
+    name: '${raw['name'] ?? ''}',
+    order: _int(raw['order']),
+    activationSensorId: _nullableInt(raw['activationSensorId']),
+    machineId: _nullableInt(raw['machineId']),
+  );
+
+  Set<int> _machineIds(List<SystemMachine> machines, int machineId) => {
+    machineId,
+    ...machines
+        .where((machine) => machine.parentMachineId == machineId)
+        .map((machine) => machine.id),
+  };
+
+  bool _preservesConfiguredItems(
+    MachineConfiguration previous,
+    MachineConfiguration updated,
+  ) {
+    bool containsIds<T>(
+      Iterable<T> previousItems,
+      Iterable<T> updatedItems,
+      int Function(T) idOf,
+    ) {
+      final previousIds = previousItems.map(idOf).toSet();
+      final updatedIds = updatedItems.map(idOf).toSet();
+      return updatedIds.containsAll(previousIds);
+    }
+
+    return previous.machine.id == updated.machine.id &&
+        containsIds(
+          previous.components,
+          updated.components,
+          (item) => item.id,
+        ) &&
+        containsIds(previous.motors, updated.motors, (item) => item.id) &&
+        containsIds(previous.servos, updated.servos, (item) => item.id) &&
+        containsIds(previous.sensors, updated.sensors, (item) => item.id);
   }
 
   void _ensureMaster() {
@@ -252,6 +626,6 @@ class SystemConfigurationService {
 
   static int? _nullableInt(Object? value) => value == null ? null : _int(value);
 
-  static double _double(Object? value) =>
-      value is num ? value.toDouble() : double.tryParse('$value') ?? 0;
+  static double _double(Object? value, [double fallback = 0]) =>
+      value is num ? value.toDouble() : double.tryParse('$value') ?? fallback;
 }

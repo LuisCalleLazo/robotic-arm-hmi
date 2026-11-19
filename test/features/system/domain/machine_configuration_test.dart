@@ -64,7 +64,7 @@ void main() {
           key: 'MOTOR-NORTE',
           keySensorRight: 'SENSOR-DERECHO',
           keySensorLeft: null,
-          speed: 500,
+          speed: 5000,
           maxStepsRight: '-120',
           maxStepsLeft: '300',
         ),
@@ -94,7 +94,7 @@ void main() {
 
     expect(
       MachineConfigurationValidator.validate(configuration),
-      'La velocidad debe ser positiva y los límites de movimiento enteros.',
+      'La velocidad debe estar entre 100 y 10000 y los límites de movimiento ser enteros.',
     );
   });
 }

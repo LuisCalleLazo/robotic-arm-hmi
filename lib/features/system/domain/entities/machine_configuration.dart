@@ -48,7 +48,12 @@ class MachineConfiguration {
         .toList(),
     'sensors': sensors
         .map(
-          (sensor) => {'id': sensor.id, 'key': sensor.key, 'name': sensor.name},
+          (sensor) => {
+            'id': sensor.id,
+            'machineId': sensor.machineId,
+            'key': sensor.key,
+            'name': sensor.name,
+          },
         )
         .toList(),
     'servos': servos
@@ -99,6 +104,7 @@ class MachineConfiguration {
     final sensors = _list(raw['sensors']).map((item) {
       return Sensor(
         id: _int(item['id']),
+        machineId: _nullableInt(item['machineId']),
         key: '${item['key'] ?? ''}',
         name: '${item['name'] ?? ''}',
       );
@@ -171,11 +177,13 @@ class MachineConfigurationValidator {
     if (configuration.motors.any(
       (motor) =>
           !motor.speed.isFinite ||
-          motor.speed <= 0 ||
+          motor.speed.truncateToDouble() != motor.speed ||
+          motor.speed < 100 ||
+          motor.speed > 10000 ||
           !_validOptionalMovement(motor.maxStepsRight) ||
           !_validOptionalMovement(motor.maxStepsLeft),
     )) {
-      return 'La velocidad debe ser positiva y los límites de movimiento enteros.';
+      return 'La velocidad debe estar entre 100 y 10000 y los límites de movimiento ser enteros.';
     }
     if (_hasDuplicate(configuration.motors.map((motor) => motor.key))) {
       return 'No puede haber claves de motor duplicadas.';
@@ -185,8 +193,10 @@ class MachineConfigurationValidator {
     )) {
       return 'Cada sensor debe tener clave y nombre.';
     }
-    if (configuration.sensors.any((sensor) => !_validKey(sensor.key))) {
-      return 'Las claves de los sensores deben tener entre 1 y 3 caracteres.';
+    if (configuration.sensors.any(
+      (sensor) => sensor.machineId != null && sensor.machineId != machine.id,
+    )) {
+      return 'Los sensores deben pertenecer a la máquina configurada.';
     }
     if (_hasDuplicate(configuration.sensors.map((sensor) => sensor.key))) {
       return 'No puede haber claves de sensor duplicadas.';
@@ -205,11 +215,6 @@ class MachineConfigurationValidator {
 
   static bool isLargeBelt(String type) =>
       type.trim().toUpperCase() == 'CINTA GRANDE';
-
-  static bool _validKey(String value) {
-    final key = value.trim();
-    return key.isNotEmpty && key.length <= 3;
-  }
 
   static bool _validOptionalMovement(String? value) =>
       value == null || int.tryParse(value.trim()) != null;

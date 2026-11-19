@@ -18,12 +18,27 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
+  final _commandController = TextEditingController();
   bool _showLogs = false;
+
+  @override
+  void dispose() {
+    _commandController.dispose();
+    super.dispose();
+  }
+
+  void _sendCommand() {
+    final command = _commandController.text.trim();
+    if (command.isEmpty) return;
+    context.read<ConnectionBloc>().add(CommandSent(command));
+    _commandController.clear();
+  }
 
   @override
   Widget build(BuildContext context) {
     final connection = context.watch<ConnectionBloc>().state;
-    final simulation = context.watch<TelemetryCubit>().state.isSimulating;
+    final telemetry = context.watch<TelemetryCubit>().state;
+    final simulation = telemetry.isSimulating;
     final color = simulation
         ? Colors.lightBlue
         : connection.isConnected
@@ -58,8 +73,67 @@ class _DashboardPageState extends State<DashboardPage> {
           const SizedBox(width: 8),
         ],
       ),
-      body: const Center(
-        child: Text('Sistema general preparado para la animación futura.'),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 760),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: _commandController,
+                            enabled: connection.isConnected,
+                            onSubmitted: (_) => _sendCommand(),
+                            decoration: const InputDecoration(
+                              labelText: 'Comando serial',
+                              hintText: 'Ej. BC?',
+                              border: OutlineInputBorder(),
+                              prefixIcon: Icon(Icons.terminal),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: connection.isConnected
+                              ? _sendCommand
+                              : null,
+                          icon: const Icon(Icons.send),
+                          label: const Text('Enviar'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Card(
+                    clipBehavior: Clip.antiAlias,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const ListTile(
+                          leading: Icon(Icons.mark_email_unread_outlined),
+                          title: Text('Respuestas recibidas'),
+                          subtitle: Text('Lectura en vivo desde el serial'),
+                        ),
+                        const Divider(height: 1),
+                        Expanded(
+                          child: _incomingLines(telemetry.consoleEntries),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => setState(() => _showLogs = !_showLogs),
@@ -77,6 +151,34 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             )
           : null,
+    );
+  }
+
+  Widget _incomingLines(List<TelemetryLogEntry> entries) {
+    final incoming = entries
+        .where(
+          (entry) =>
+              entry.source == TelemetrySource.serial ||
+              entry.source == TelemetrySource.peerSerial,
+        )
+        .toList()
+        .reversed
+        .take(100)
+        .toList();
+    if (incoming.isEmpty) {
+      return const Center(child: Text('Aún no se recibieron respuestas.'));
+    }
+    return ListView.builder(
+      reverse: true,
+      padding: const EdgeInsets.all(12),
+      itemCount: incoming.length,
+      itemBuilder: (context, index) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3),
+        child: SelectableText(
+          'RX  ${incoming[index].line}',
+          style: const TextStyle(color: Colors.green, fontFamily: 'monospace'),
+        ),
+      ),
     );
   }
 }

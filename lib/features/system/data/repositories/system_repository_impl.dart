@@ -69,10 +69,18 @@ class SystemRepositoryImpl implements SystemRepository {
       _dataSource.saveProcessMotor(processMotor);
 
   @override
+  Future<void> deleteProcessMotor(int id) =>
+      _dataSource.deleteProcessMotor(id);
+
+  @override
   Future<List<ProcessServo>> getProcessServos(int processId) =>
       _dataSource.getProcessServos(processId);
 
   @override
   Future<void> saveProcessServo(ProcessServo processServo) =>
       _dataSource.saveProcessServo(processServo);
+
+  @override
+  Future<void> deleteProcessServo(int id) =>
+      _dataSource.deleteProcessServo(id);
 }

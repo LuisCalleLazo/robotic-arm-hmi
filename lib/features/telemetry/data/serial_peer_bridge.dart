@@ -42,7 +42,23 @@ class SerialPeerBridge {
       return;
     }
     final line = message.payload['line'];
-    if (line is String) _telemetry.ingestPeerLine(line);
+    if (line is! String) return;
+    _telemetry.ingestPeerLine(line);
+    final session = _peer.session;
+    final senderId = message.senderId;
+    if (!session.isMaster || senderId == null) return;
+    for (final client in session.clients) {
+      if (client.id == senderId) continue;
+      unawaited(
+        _peer.sendToClient(
+          client.id,
+          PeerMessage(
+            type: PeerMessageType.telemetry,
+            payload: {'kind': 'serial_line', 'line': line},
+          ),
+        ),
+      );
+    }
   }
 
   Future<void> dispose() async {

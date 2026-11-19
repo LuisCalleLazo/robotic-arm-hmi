@@ -1144,6 +1144,20 @@ class $SensorsTable extends Sensors with TableInfo<$SensorsTable, SensorRow> {
     type: DriftSqlType.int,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _machineIdMeta = const VerificationMeta(
+    'machineId',
+  );
+  @override
+  late final GeneratedColumn<int> machineId = GeneratedColumn<int>(
+    'machine_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES system_machines (id)',
+    ),
+  );
   static const VerificationMeta _keyMeta = const VerificationMeta('key');
   @override
   late final GeneratedColumn<String> key = GeneratedColumn<String>(
@@ -1163,7 +1177,7 @@ class $SensorsTable extends Sensors with TableInfo<$SensorsTable, SensorRow> {
     requiredDuringInsert: true,
   );
   @override
-  List<GeneratedColumn> get $columns => [id, key, name];
+  List<GeneratedColumn> get $columns => [id, machineId, key, name];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -1178,6 +1192,12 @@ class $SensorsTable extends Sensors with TableInfo<$SensorsTable, SensorRow> {
     final data = instance.toColumns(true);
     if (data.containsKey('id')) {
       context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('machine_id')) {
+      context.handle(
+        _machineIdMeta,
+        machineId.isAcceptableOrUnknown(data['machine_id']!, _machineIdMeta),
+      );
     }
     if (data.containsKey('key')) {
       context.handle(
@@ -1208,6 +1228,10 @@ class $SensorsTable extends Sensors with TableInfo<$SensorsTable, SensorRow> {
         DriftSqlType.int,
         data['${effectivePrefix}id'],
       )!,
+      machineId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}machine_id'],
+      ),
       key: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}key'],
@@ -1227,20 +1251,36 @@ class $SensorsTable extends Sensors with TableInfo<$SensorsTable, SensorRow> {
 
 class SensorRow extends DataClass implements Insertable<SensorRow> {
   final int id;
+  final int? machineId;
   final String key;
   final String name;
-  const SensorRow({required this.id, required this.key, required this.name});
+  const SensorRow({
+    required this.id,
+    this.machineId,
+    required this.key,
+    required this.name,
+  });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
+    if (!nullToAbsent || machineId != null) {
+      map['machine_id'] = Variable<int>(machineId);
+    }
     map['key'] = Variable<String>(key);
     map['name'] = Variable<String>(name);
     return map;
   }
 
   SensorsCompanion toCompanion(bool nullToAbsent) {
-    return SensorsCompanion(id: Value(id), key: Value(key), name: Value(name));
+    return SensorsCompanion(
+      id: Value(id),
+      machineId: machineId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(machineId),
+      key: Value(key),
+      name: Value(name),
+    );
   }
 
   factory SensorRow.fromJson(
@@ -1250,6 +1290,7 @@ class SensorRow extends DataClass implements Insertable<SensorRow> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return SensorRow(
       id: serializer.fromJson<int>(json['id']),
+      machineId: serializer.fromJson<int?>(json['machineId']),
       key: serializer.fromJson<String>(json['key']),
       name: serializer.fromJson<String>(json['name']),
     );
@@ -1259,19 +1300,27 @@ class SensorRow extends DataClass implements Insertable<SensorRow> {
     serializer ??= driftRuntimeOptions.defaultSerializer;
     return <String, dynamic>{
       'id': serializer.toJson<int>(id),
+      'machineId': serializer.toJson<int?>(machineId),
       'key': serializer.toJson<String>(key),
       'name': serializer.toJson<String>(name),
     };
   }
 
-  SensorRow copyWith({int? id, String? key, String? name}) => SensorRow(
+  SensorRow copyWith({
+    int? id,
+    Value<int?> machineId = const Value.absent(),
+    String? key,
+    String? name,
+  }) => SensorRow(
     id: id ?? this.id,
+    machineId: machineId.present ? machineId.value : this.machineId,
     key: key ?? this.key,
     name: name ?? this.name,
   );
   SensorRow copyWithCompanion(SensorsCompanion data) {
     return SensorRow(
       id: data.id.present ? data.id.value : this.id,
+      machineId: data.machineId.present ? data.machineId.value : this.machineId,
       key: data.key.present ? data.key.value : this.key,
       name: data.name.present ? data.name.value : this.name,
     );
@@ -1281,6 +1330,7 @@ class SensorRow extends DataClass implements Insertable<SensorRow> {
   String toString() {
     return (StringBuffer('SensorRow(')
           ..write('id: $id, ')
+          ..write('machineId: $machineId, ')
           ..write('key: $key, ')
           ..write('name: $name')
           ..write(')'))
@@ -1288,38 +1338,44 @@ class SensorRow extends DataClass implements Insertable<SensorRow> {
   }
 
   @override
-  int get hashCode => Object.hash(id, key, name);
+  int get hashCode => Object.hash(id, machineId, key, name);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
       (other is SensorRow &&
           other.id == this.id &&
+          other.machineId == this.machineId &&
           other.key == this.key &&
           other.name == this.name);
 }
 
 class SensorsCompanion extends UpdateCompanion<SensorRow> {
   final Value<int> id;
+  final Value<int?> machineId;
   final Value<String> key;
   final Value<String> name;
   const SensorsCompanion({
     this.id = const Value.absent(),
+    this.machineId = const Value.absent(),
     this.key = const Value.absent(),
     this.name = const Value.absent(),
   });
   SensorsCompanion.insert({
     this.id = const Value.absent(),
+    this.machineId = const Value.absent(),
     required String key,
     required String name,
   }) : key = Value(key),
        name = Value(name);
   static Insertable<SensorRow> custom({
     Expression<int>? id,
+    Expression<int>? machineId,
     Expression<String>? key,
     Expression<String>? name,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
+      if (machineId != null) 'machine_id': machineId,
       if (key != null) 'key': key,
       if (name != null) 'name': name,
     });
@@ -1327,11 +1383,13 @@ class SensorsCompanion extends UpdateCompanion<SensorRow> {
 
   SensorsCompanion copyWith({
     Value<int>? id,
+    Value<int?>? machineId,
     Value<String>? key,
     Value<String>? name,
   }) {
     return SensorsCompanion(
       id: id ?? this.id,
+      machineId: machineId ?? this.machineId,
       key: key ?? this.key,
       name: name ?? this.name,
     );
@@ -1342,6 +1400,9 @@ class SensorsCompanion extends UpdateCompanion<SensorRow> {
     final map = <String, Expression>{};
     if (id.present) {
       map['id'] = Variable<int>(id.value);
+    }
+    if (machineId.present) {
+      map['machine_id'] = Variable<int>(machineId.value);
     }
     if (key.present) {
       map['key'] = Variable<String>(key.value);
@@ -1356,6 +1417,7 @@ class SensorsCompanion extends UpdateCompanion<SensorRow> {
   String toString() {
     return (StringBuffer('SensorsCompanion(')
           ..write('id: $id, ')
+          ..write('machineId: $machineId, ')
           ..write('key: $key, ')
           ..write('name: $name')
           ..write(')'))
@@ -1396,6 +1458,20 @@ class $ProcessesTable extends Processes
     type: DriftSqlType.int,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _machineIdMeta = const VerificationMeta(
+    'machineId',
+  );
+  @override
+  late final GeneratedColumn<int> machineId = GeneratedColumn<int>(
+    'machine_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES system_machines (id)',
+    ),
+  );
   static const VerificationMeta _activationSensorIdMeta =
       const VerificationMeta('activationSensorId');
   @override
@@ -1410,7 +1486,13 @@ class $ProcessesTable extends Processes
     ),
   );
   @override
-  List<GeneratedColumn> get $columns => [id, name, order, activationSensorId];
+  List<GeneratedColumn> get $columns => [
+    id,
+    name,
+    order,
+    machineId,
+    activationSensorId,
+  ];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -1442,6 +1524,12 @@ class $ProcessesTable extends Processes
     } else if (isInserting) {
       context.missing(_orderMeta);
     }
+    if (data.containsKey('machine_id')) {
+      context.handle(
+        _machineIdMeta,
+        machineId.isAcceptableOrUnknown(data['machine_id']!, _machineIdMeta),
+      );
+    }
     if (data.containsKey('activation_sensor_id')) {
       context.handle(
         _activationSensorIdMeta,
@@ -1472,6 +1560,10 @@ class $ProcessesTable extends Processes
         DriftSqlType.int,
         data['${effectivePrefix}order'],
       )!,
+      machineId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}machine_id'],
+      ),
       activationSensorId: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}activation_sensor_id'],
@@ -1489,11 +1581,13 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
   final int id;
   final String name;
   final int order;
+  final int? machineId;
   final int? activationSensorId;
   const ProcessRow({
     required this.id,
     required this.name,
     required this.order,
+    this.machineId,
     this.activationSensorId,
   });
   @override
@@ -1502,6 +1596,9 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     map['id'] = Variable<int>(id);
     map['name'] = Variable<String>(name);
     map['order'] = Variable<int>(order);
+    if (!nullToAbsent || machineId != null) {
+      map['machine_id'] = Variable<int>(machineId);
+    }
     if (!nullToAbsent || activationSensorId != null) {
       map['activation_sensor_id'] = Variable<int>(activationSensorId);
     }
@@ -1513,6 +1610,9 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       id: Value(id),
       name: Value(name),
       order: Value(order),
+      machineId: machineId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(machineId),
       activationSensorId: activationSensorId == null && nullToAbsent
           ? const Value.absent()
           : Value(activationSensorId),
@@ -1528,6 +1628,7 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       id: serializer.fromJson<int>(json['id']),
       name: serializer.fromJson<String>(json['name']),
       order: serializer.fromJson<int>(json['order']),
+      machineId: serializer.fromJson<int?>(json['machineId']),
       activationSensorId: serializer.fromJson<int?>(json['activationSensorId']),
     );
   }
@@ -1538,6 +1639,7 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       'id': serializer.toJson<int>(id),
       'name': serializer.toJson<String>(name),
       'order': serializer.toJson<int>(order),
+      'machineId': serializer.toJson<int?>(machineId),
       'activationSensorId': serializer.toJson<int?>(activationSensorId),
     };
   }
@@ -1546,11 +1648,13 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     int? id,
     String? name,
     int? order,
+    Value<int?> machineId = const Value.absent(),
     Value<int?> activationSensorId = const Value.absent(),
   }) => ProcessRow(
     id: id ?? this.id,
     name: name ?? this.name,
     order: order ?? this.order,
+    machineId: machineId.present ? machineId.value : this.machineId,
     activationSensorId: activationSensorId.present
         ? activationSensorId.value
         : this.activationSensorId,
@@ -1560,6 +1664,7 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       id: data.id.present ? data.id.value : this.id,
       name: data.name.present ? data.name.value : this.name,
       order: data.order.present ? data.order.value : this.order,
+      machineId: data.machineId.present ? data.machineId.value : this.machineId,
       activationSensorId: data.activationSensorId.present
           ? data.activationSensorId.value
           : this.activationSensorId,
@@ -1572,13 +1677,15 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
           ..write('id: $id, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
+          ..write('machineId: $machineId, ')
           ..write('activationSensorId: $activationSensorId')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, name, order, activationSensorId);
+  int get hashCode =>
+      Object.hash(id, name, order, machineId, activationSensorId);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1586,6 +1693,7 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
           other.id == this.id &&
           other.name == this.name &&
           other.order == this.order &&
+          other.machineId == this.machineId &&
           other.activationSensorId == this.activationSensorId);
 }
 
@@ -1593,17 +1701,20 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
   final Value<int> id;
   final Value<String> name;
   final Value<int> order;
+  final Value<int?> machineId;
   final Value<int?> activationSensorId;
   const ProcessesCompanion({
     this.id = const Value.absent(),
     this.name = const Value.absent(),
     this.order = const Value.absent(),
+    this.machineId = const Value.absent(),
     this.activationSensorId = const Value.absent(),
   });
   ProcessesCompanion.insert({
     this.id = const Value.absent(),
     required String name,
     required int order,
+    this.machineId = const Value.absent(),
     this.activationSensorId = const Value.absent(),
   }) : name = Value(name),
        order = Value(order);
@@ -1611,12 +1722,14 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     Expression<int>? id,
     Expression<String>? name,
     Expression<int>? order,
+    Expression<int>? machineId,
     Expression<int>? activationSensorId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (name != null) 'name': name,
       if (order != null) 'order': order,
+      if (machineId != null) 'machine_id': machineId,
       if (activationSensorId != null)
         'activation_sensor_id': activationSensorId,
     });
@@ -1626,12 +1739,14 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     Value<int>? id,
     Value<String>? name,
     Value<int>? order,
+    Value<int?>? machineId,
     Value<int?>? activationSensorId,
   }) {
     return ProcessesCompanion(
       id: id ?? this.id,
       name: name ?? this.name,
       order: order ?? this.order,
+      machineId: machineId ?? this.machineId,
       activationSensorId: activationSensorId ?? this.activationSensorId,
     );
   }
@@ -1648,6 +1763,9 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     if (order.present) {
       map['order'] = Variable<int>(order.value);
     }
+    if (machineId.present) {
+      map['machine_id'] = Variable<int>(machineId.value);
+    }
     if (activationSensorId.present) {
       map['activation_sensor_id'] = Variable<int>(activationSensorId.value);
     }
@@ -1660,6 +1778,7 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
           ..write('id: $id, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
+          ..write('machineId: $machineId, ')
           ..write('activationSensorId: $activationSensorId')
           ..write(')'))
         .toString();
@@ -1736,6 +1855,16 @@ class $ProcessMotorsTable extends ProcessMotors
     type: DriftSqlType.double,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _speedMeta = const VerificationMeta('speed');
+  @override
+  late final GeneratedColumn<double> speed = GeneratedColumn<double>(
+    'speed',
+    aliasedName,
+    false,
+    type: DriftSqlType.double,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(5000),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1744,6 +1873,7 @@ class $ProcessMotorsTable extends ProcessMotors
     name,
     order,
     steps,
+    speed,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1800,6 +1930,12 @@ class $ProcessMotorsTable extends ProcessMotors
     } else if (isInserting) {
       context.missing(_stepsMeta);
     }
+    if (data.containsKey('speed')) {
+      context.handle(
+        _speedMeta,
+        speed.isAcceptableOrUnknown(data['speed']!, _speedMeta),
+      );
+    }
     return context;
   }
 
@@ -1833,6 +1969,10 @@ class $ProcessMotorsTable extends ProcessMotors
         DriftSqlType.double,
         data['${effectivePrefix}steps'],
       )!,
+      speed: attachedDatabase.typeMapping.read(
+        DriftSqlType.double,
+        data['${effectivePrefix}speed'],
+      )!,
     );
   }
 
@@ -1849,6 +1989,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
   final String name;
   final int order;
   final double steps;
+  final double speed;
   const ProcessMotorRow({
     required this.id,
     required this.processId,
@@ -1856,6 +1997,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
     required this.name,
     required this.order,
     required this.steps,
+    required this.speed,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1866,6 +2008,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
     map['name'] = Variable<String>(name);
     map['order'] = Variable<int>(order);
     map['steps'] = Variable<double>(steps);
+    map['speed'] = Variable<double>(speed);
     return map;
   }
 
@@ -1877,6 +2020,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
       name: Value(name),
       order: Value(order),
       steps: Value(steps),
+      speed: Value(speed),
     );
   }
 
@@ -1892,6 +2036,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
       name: serializer.fromJson<String>(json['name']),
       order: serializer.fromJson<int>(json['order']),
       steps: serializer.fromJson<double>(json['steps']),
+      speed: serializer.fromJson<double>(json['speed']),
     );
   }
   @override
@@ -1904,6 +2049,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
       'name': serializer.toJson<String>(name),
       'order': serializer.toJson<int>(order),
       'steps': serializer.toJson<double>(steps),
+      'speed': serializer.toJson<double>(speed),
     };
   }
 
@@ -1914,6 +2060,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
     String? name,
     int? order,
     double? steps,
+    double? speed,
   }) => ProcessMotorRow(
     id: id ?? this.id,
     processId: processId ?? this.processId,
@@ -1921,6 +2068,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
     name: name ?? this.name,
     order: order ?? this.order,
     steps: steps ?? this.steps,
+    speed: speed ?? this.speed,
   );
   ProcessMotorRow copyWithCompanion(ProcessMotorsCompanion data) {
     return ProcessMotorRow(
@@ -1930,6 +2078,7 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
       name: data.name.present ? data.name.value : this.name,
       order: data.order.present ? data.order.value : this.order,
       steps: data.steps.present ? data.steps.value : this.steps,
+      speed: data.speed.present ? data.speed.value : this.speed,
     );
   }
 
@@ -1941,13 +2090,15 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
           ..write('motorId: $motorId, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
-          ..write('steps: $steps')
+          ..write('steps: $steps, ')
+          ..write('speed: $speed')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode => Object.hash(id, processId, motorId, name, order, steps);
+  int get hashCode =>
+      Object.hash(id, processId, motorId, name, order, steps, speed);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -1957,7 +2108,8 @@ class ProcessMotorRow extends DataClass implements Insertable<ProcessMotorRow> {
           other.motorId == this.motorId &&
           other.name == this.name &&
           other.order == this.order &&
-          other.steps == this.steps);
+          other.steps == this.steps &&
+          other.speed == this.speed);
 }
 
 class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
@@ -1967,6 +2119,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
   final Value<String> name;
   final Value<int> order;
   final Value<double> steps;
+  final Value<double> speed;
   const ProcessMotorsCompanion({
     this.id = const Value.absent(),
     this.processId = const Value.absent(),
@@ -1974,6 +2127,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
     this.name = const Value.absent(),
     this.order = const Value.absent(),
     this.steps = const Value.absent(),
+    this.speed = const Value.absent(),
   });
   ProcessMotorsCompanion.insert({
     this.id = const Value.absent(),
@@ -1982,6 +2136,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
     required String name,
     required int order,
     required double steps,
+    this.speed = const Value.absent(),
   }) : processId = Value(processId),
        motorId = Value(motorId),
        name = Value(name),
@@ -1994,6 +2149,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
     Expression<String>? name,
     Expression<int>? order,
     Expression<double>? steps,
+    Expression<double>? speed,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -2002,6 +2158,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
       if (name != null) 'name': name,
       if (order != null) 'order': order,
       if (steps != null) 'steps': steps,
+      if (speed != null) 'speed': speed,
     });
   }
 
@@ -2012,6 +2169,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
     Value<String>? name,
     Value<int>? order,
     Value<double>? steps,
+    Value<double>? speed,
   }) {
     return ProcessMotorsCompanion(
       id: id ?? this.id,
@@ -2020,6 +2178,7 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
       name: name ?? this.name,
       order: order ?? this.order,
       steps: steps ?? this.steps,
+      speed: speed ?? this.speed,
     );
   }
 
@@ -2044,6 +2203,9 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
     if (steps.present) {
       map['steps'] = Variable<double>(steps.value);
     }
+    if (speed.present) {
+      map['speed'] = Variable<double>(speed.value);
+    }
     return map;
   }
 
@@ -2055,7 +2217,8 @@ class ProcessMotorsCompanion extends UpdateCompanion<ProcessMotorRow> {
           ..write('motorId: $motorId, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
-          ..write('steps: $steps')
+          ..write('steps: $steps, ')
+          ..write('speed: $speed')
           ..write(')'))
         .toString();
   }
@@ -2133,6 +2296,16 @@ class $ProcessServosTable extends ProcessServos
     type: DriftSqlType.double,
     requiredDuringInsert: true,
   );
+  static const VerificationMeta _speedMeta = const VerificationMeta('speed');
+  @override
+  late final GeneratedColumn<double> speed = GeneratedColumn<double>(
+    'speed',
+    aliasedName,
+    false,
+    type: DriftSqlType.double,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(60),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -2141,6 +2314,7 @@ class $ProcessServosTable extends ProcessServos
     name,
     order,
     openValue,
+    speed,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -2197,6 +2371,12 @@ class $ProcessServosTable extends ProcessServos
     } else if (isInserting) {
       context.missing(_openValueMeta);
     }
+    if (data.containsKey('speed')) {
+      context.handle(
+        _speedMeta,
+        speed.isAcceptableOrUnknown(data['speed']!, _speedMeta),
+      );
+    }
     return context;
   }
 
@@ -2230,6 +2410,10 @@ class $ProcessServosTable extends ProcessServos
         DriftSqlType.double,
         data['${effectivePrefix}open_value'],
       )!,
+      speed: attachedDatabase.typeMapping.read(
+        DriftSqlType.double,
+        data['${effectivePrefix}speed'],
+      )!,
     );
   }
 
@@ -2246,6 +2430,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
   final String name;
   final int order;
   final double openValue;
+  final double speed;
   const ProcessServoRow({
     required this.id,
     required this.processId,
@@ -2253,6 +2438,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
     required this.name,
     required this.order,
     required this.openValue,
+    required this.speed,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -2263,6 +2449,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
     map['name'] = Variable<String>(name);
     map['order'] = Variable<int>(order);
     map['open_value'] = Variable<double>(openValue);
+    map['speed'] = Variable<double>(speed);
     return map;
   }
 
@@ -2274,6 +2461,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
       name: Value(name),
       order: Value(order),
       openValue: Value(openValue),
+      speed: Value(speed),
     );
   }
 
@@ -2289,6 +2477,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
       name: serializer.fromJson<String>(json['name']),
       order: serializer.fromJson<int>(json['order']),
       openValue: serializer.fromJson<double>(json['openValue']),
+      speed: serializer.fromJson<double>(json['speed']),
     );
   }
   @override
@@ -2301,6 +2490,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
       'name': serializer.toJson<String>(name),
       'order': serializer.toJson<int>(order),
       'openValue': serializer.toJson<double>(openValue),
+      'speed': serializer.toJson<double>(speed),
     };
   }
 
@@ -2311,6 +2501,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
     String? name,
     int? order,
     double? openValue,
+    double? speed,
   }) => ProcessServoRow(
     id: id ?? this.id,
     processId: processId ?? this.processId,
@@ -2318,6 +2509,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
     name: name ?? this.name,
     order: order ?? this.order,
     openValue: openValue ?? this.openValue,
+    speed: speed ?? this.speed,
   );
   ProcessServoRow copyWithCompanion(ProcessServosCompanion data) {
     return ProcessServoRow(
@@ -2327,6 +2519,7 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
       name: data.name.present ? data.name.value : this.name,
       order: data.order.present ? data.order.value : this.order,
       openValue: data.openValue.present ? data.openValue.value : this.openValue,
+      speed: data.speed.present ? data.speed.value : this.speed,
     );
   }
 
@@ -2338,14 +2531,15 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
           ..write('servoId: $servoId, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
-          ..write('openValue: $openValue')
+          ..write('openValue: $openValue, ')
+          ..write('speed: $speed')
           ..write(')'))
         .toString();
   }
 
   @override
   int get hashCode =>
-      Object.hash(id, processId, servoId, name, order, openValue);
+      Object.hash(id, processId, servoId, name, order, openValue, speed);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -2355,7 +2549,8 @@ class ProcessServoRow extends DataClass implements Insertable<ProcessServoRow> {
           other.servoId == this.servoId &&
           other.name == this.name &&
           other.order == this.order &&
-          other.openValue == this.openValue);
+          other.openValue == this.openValue &&
+          other.speed == this.speed);
 }
 
 class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
@@ -2365,6 +2560,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
   final Value<String> name;
   final Value<int> order;
   final Value<double> openValue;
+  final Value<double> speed;
   const ProcessServosCompanion({
     this.id = const Value.absent(),
     this.processId = const Value.absent(),
@@ -2372,6 +2568,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
     this.name = const Value.absent(),
     this.order = const Value.absent(),
     this.openValue = const Value.absent(),
+    this.speed = const Value.absent(),
   });
   ProcessServosCompanion.insert({
     this.id = const Value.absent(),
@@ -2380,6 +2577,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
     required String name,
     required int order,
     required double openValue,
+    this.speed = const Value.absent(),
   }) : processId = Value(processId),
        servoId = Value(servoId),
        name = Value(name),
@@ -2392,6 +2590,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
     Expression<String>? name,
     Expression<int>? order,
     Expression<double>? openValue,
+    Expression<double>? speed,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -2400,6 +2599,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
       if (name != null) 'name': name,
       if (order != null) 'order': order,
       if (openValue != null) 'open_value': openValue,
+      if (speed != null) 'speed': speed,
     });
   }
 
@@ -2410,6 +2610,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
     Value<String>? name,
     Value<int>? order,
     Value<double>? openValue,
+    Value<double>? speed,
   }) {
     return ProcessServosCompanion(
       id: id ?? this.id,
@@ -2418,6 +2619,7 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
       name: name ?? this.name,
       order: order ?? this.order,
       openValue: openValue ?? this.openValue,
+      speed: speed ?? this.speed,
     );
   }
 
@@ -2442,6 +2644,9 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
     if (openValue.present) {
       map['open_value'] = Variable<double>(openValue.value);
     }
+    if (speed.present) {
+      map['speed'] = Variable<double>(speed.value);
+    }
     return map;
   }
 
@@ -2453,7 +2658,8 @@ class ProcessServosCompanion extends UpdateCompanion<ProcessServoRow> {
           ..write('servoId: $servoId, ')
           ..write('name: $name, ')
           ..write('order: $order, ')
-          ..write('openValue: $openValue')
+          ..write('openValue: $openValue, ')
+          ..write('speed: $speed')
           ..write(')'))
         .toString();
   }
@@ -3758,6 +3964,43 @@ final class $$SystemMachinesTableReferences
     );
   }
 
+  static MultiTypedResultKey<$SensorsTable, List<SensorRow>> _sensorsRefsTable(
+    _$SystemDatabase db,
+  ) => MultiTypedResultKey.fromTable(
+    db.sensors,
+    aliasName: 'system_machines__id__sensors__machine_id',
+  );
+
+  $$SensorsTableProcessedTableManager get sensorsRefs {
+    final manager = $$SensorsTableTableManager(
+      $_db,
+      $_db.sensors,
+    ).filter((f) => f.machineId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_sensorsRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
+  static MultiTypedResultKey<$ProcessesTable, List<ProcessRow>>
+  _processesRefsTable(_$SystemDatabase db) => MultiTypedResultKey.fromTable(
+    db.processes,
+    aliasName: 'system_machines__id__processes__machine_id',
+  );
+
+  $$ProcessesTableProcessedTableManager get processesRefs {
+    final manager = $$ProcessesTableTableManager(
+      $_db,
+      $_db.processes,
+    ).filter((f) => f.machineId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_processesRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
   static MultiTypedResultKey<$SystemPositionsTable, List<SystemPositionRow>>
   _systemPositionsRefsTable(_$SystemDatabase db) =>
       MultiTypedResultKey.fromTable(
@@ -3868,6 +4111,56 @@ class $$SystemMachinesTableFilterComposer
           }) => $$ServosTableFilterComposer(
             $db: $db,
             $table: $db.servos,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<bool> sensorsRefs(
+    Expression<bool> Function($$SensorsTableFilterComposer f) f,
+  ) {
+    final $$SensorsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.sensors,
+      getReferencedColumn: (t) => t.machineId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SensorsTableFilterComposer(
+            $db: $db,
+            $table: $db.sensors,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<bool> processesRefs(
+    Expression<bool> Function($$ProcessesTableFilterComposer f) f,
+  ) {
+    final $$ProcessesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.processes,
+      getReferencedColumn: (t) => t.machineId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProcessesTableFilterComposer(
+            $db: $db,
+            $table: $db.processes,
             $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
             joinBuilder: joinBuilder,
             $removeJoinBuilderFromRootComposer:
@@ -4042,6 +4335,56 @@ class $$SystemMachinesTableAnnotationComposer
     return f(composer);
   }
 
+  Expression<T> sensorsRefs<T extends Object>(
+    Expression<T> Function($$SensorsTableAnnotationComposer a) f,
+  ) {
+    final $$SensorsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.sensors,
+      getReferencedColumn: (t) => t.machineId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SensorsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.sensors,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
+  Expression<T> processesRefs<T extends Object>(
+    Expression<T> Function($$ProcessesTableAnnotationComposer a) f,
+  ) {
+    final $$ProcessesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.processes,
+      getReferencedColumn: (t) => t.machineId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$ProcessesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.processes,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+
   Expression<T> systemPositionsRefs<T extends Object>(
     Expression<T> Function($$SystemPositionsTableAnnotationComposer a) f,
   ) {
@@ -4085,6 +4428,8 @@ class $$SystemMachinesTableTableManager
             bool parentMachineId,
             bool motorsRefs,
             bool servosRefs,
+            bool sensorsRefs,
+            bool processesRefs,
             bool systemPositionsRefs,
           })
         > {
@@ -4138,6 +4483,8 @@ class $$SystemMachinesTableTableManager
                 parentMachineId = false,
                 motorsRefs = false,
                 servosRefs = false,
+                sensorsRefs = false,
+                processesRefs = false,
                 systemPositionsRefs = false,
               }) {
                 return PrefetchHooks(
@@ -4145,6 +4492,8 @@ class $$SystemMachinesTableTableManager
                   explicitlyWatchedTables: [
                     if (motorsRefs) db.motors,
                     if (servosRefs) db.servos,
+                    if (sensorsRefs) db.sensors,
+                    if (processesRefs) db.processes,
                     if (systemPositionsRefs) db.systemPositions,
                   ],
                   addJoins:
@@ -4223,6 +4572,46 @@ class $$SystemMachinesTableTableManager
                           referencedColumn: 'machine_id',
                           typedResults: items,
                         ),
+                      if (sensorsRefs)
+                        await $_getPrefetchedDataByColumns<
+                          SystemMachineRow,
+                          $SystemMachinesTable,
+                          SensorRow,
+                          $SensorsTable
+                        >(
+                          currentTable: table,
+                          referencedTable: $$SystemMachinesTableReferences
+                              ._sensorsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$SystemMachinesTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).sensorsRefs,
+                          currentColumn: 'id',
+                          referencedColumn: 'machine_id',
+                          typedResults: items,
+                        ),
+                      if (processesRefs)
+                        await $_getPrefetchedDataByColumns<
+                          SystemMachineRow,
+                          $SystemMachinesTable,
+                          ProcessRow,
+                          $ProcessesTable
+                        >(
+                          currentTable: table,
+                          referencedTable: $$SystemMachinesTableReferences
+                              ._processesRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$SystemMachinesTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).processesRefs,
+                          currentColumn: 'id',
+                          referencedColumn: 'machine_id',
+                          typedResults: items,
+                        ),
                       if (systemPositionsRefs)
                         await $_getPrefetchedDataByColumns<
                           SystemMachineRow,
@@ -4267,6 +4656,8 @@ typedef $$SystemMachinesTableProcessedTableManager =
         bool parentMachineId,
         bool motorsRefs,
         bool servosRefs,
+        bool sensorsRefs,
+        bool processesRefs,
         bool systemPositionsRefs,
       })
     >;
@@ -5126,12 +5517,14 @@ typedef $$ServosTableProcessedTableManager =
 typedef $$SensorsTableCreateCompanionBuilder =
     SensorsCompanion Function({
       Value<int> id,
+      Value<int?> machineId,
       required String key,
       required String name,
     });
 typedef $$SensorsTableUpdateCompanionBuilder =
     SensorsCompanion Function({
       Value<int> id,
+      Value<int?> machineId,
       Value<String> key,
       Value<String> name,
     });
@@ -5139,6 +5532,23 @@ typedef $$SensorsTableUpdateCompanionBuilder =
 final class $$SensorsTableReferences
     extends BaseReferences<_$SystemDatabase, $SensorsTable, SensorRow> {
   $$SensorsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $SystemMachinesTable _machineIdTable(_$SystemDatabase db) =>
+      db.systemMachines.createAlias('sensors__machine_id__system_machines__id');
+
+  $$SystemMachinesTableProcessedTableManager? get machineId {
+    final $_column = $_itemColumn<int>('machine_id');
+    if ($_column == null) return null;
+    final manager = $$SystemMachinesTableTableManager(
+      $_db,
+      $_db.systemMachines,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_machineIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
 
   static MultiTypedResultKey<$ProcessesTable, List<ProcessRow>>
   _processesRefsTable(_$SystemDatabase db) => MultiTypedResultKey.fromTable(
@@ -5181,6 +5591,29 @@ class $$SensorsTableFilterComposer
     column: $table.name,
     builder: (column) => ColumnFilters(column),
   );
+
+  $$SystemMachinesTableFilterComposer get machineId {
+    final $$SystemMachinesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableFilterComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   Expression<bool> processesRefs(
     Expression<bool> Function($$ProcessesTableFilterComposer f) f,
@@ -5231,6 +5664,29 @@ class $$SensorsTableOrderingComposer
     column: $table.name,
     builder: (column) => ColumnOrderings(column),
   );
+
+  $$SystemMachinesTableOrderingComposer get machineId {
+    final $$SystemMachinesTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableOrderingComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 }
 
 class $$SensorsTableAnnotationComposer
@@ -5250,6 +5706,29 @@ class $$SensorsTableAnnotationComposer
 
   GeneratedColumn<String> get name =>
       $composableBuilder(column: $table.name, builder: (column) => column);
+
+  $$SystemMachinesTableAnnotationComposer get machineId {
+    final $$SystemMachinesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   Expression<T> processesRefs<T extends Object>(
     Expression<T> Function($$ProcessesTableAnnotationComposer a) f,
@@ -5290,7 +5769,7 @@ class $$SensorsTableTableManager
           $$SensorsTableUpdateCompanionBuilder,
           (SensorRow, $$SensorsTableReferences),
           SensorRow,
-          PrefetchHooks Function({bool processesRefs})
+          PrefetchHooks Function({bool machineId, bool processesRefs})
         > {
   $$SensorsTableTableManager(_$SystemDatabase db, $SensorsTable table)
     : super(
@@ -5306,15 +5785,27 @@ class $$SensorsTableTableManager
           updateCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
+                Value<int?> machineId = const Value.absent(),
                 Value<String> key = const Value.absent(),
                 Value<String> name = const Value.absent(),
-              }) => SensorsCompanion(id: id, key: key, name: name),
+              }) => SensorsCompanion(
+                id: id,
+                machineId: machineId,
+                key: key,
+                name: name,
+              ),
           createCompanionCallback:
               ({
                 Value<int> id = const Value.absent(),
+                Value<int?> machineId = const Value.absent(),
                 required String key,
                 required String name,
-              }) => SensorsCompanion.insert(id: id, key: key, name: name),
+              }) => SensorsCompanion.insert(
+                id: id,
+                machineId: machineId,
+                key: key,
+                name: name,
+              ),
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
@@ -5323,11 +5814,42 @@ class $$SensorsTableTableManager
                 ),
               )
               .toList(),
-          prefetchHooksCallback: ({processesRefs = false}) {
+          prefetchHooksCallback: ({machineId = false, processesRefs = false}) {
             return PrefetchHooks(
               db: db,
               explicitlyWatchedTables: [if (processesRefs) db.processes],
-              addJoins: null,
+              addJoins:
+                  <
+                    T extends TableManagerState<
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic,
+                      dynamic
+                    >
+                  >(state) {
+                    if (machineId) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.machineId,
+                                referencedTable: $$SensorsTableReferences
+                                    ._machineIdTable(db),
+                                referencedColumn: $$SensorsTableReferences
+                                    ._machineIdTable(db)
+                                    .id,
+                              )
+                              as T;
+                    }
+
+                    return state;
+                  },
               getPrefetchedDataCallback: (items) async {
                 return [
                   if (processesRefs)
@@ -5366,13 +5888,14 @@ typedef $$SensorsTableProcessedTableManager =
       $$SensorsTableUpdateCompanionBuilder,
       (SensorRow, $$SensorsTableReferences),
       SensorRow,
-      PrefetchHooks Function({bool processesRefs})
+      PrefetchHooks Function({bool machineId, bool processesRefs})
     >;
 typedef $$ProcessesTableCreateCompanionBuilder =
     ProcessesCompanion Function({
       Value<int> id,
       required String name,
       required int order,
+      Value<int?> machineId,
       Value<int?> activationSensorId,
     });
 typedef $$ProcessesTableUpdateCompanionBuilder =
@@ -5380,12 +5903,31 @@ typedef $$ProcessesTableUpdateCompanionBuilder =
       Value<int> id,
       Value<String> name,
       Value<int> order,
+      Value<int?> machineId,
       Value<int?> activationSensorId,
     });
 
 final class $$ProcessesTableReferences
     extends BaseReferences<_$SystemDatabase, $ProcessesTable, ProcessRow> {
   $$ProcessesTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $SystemMachinesTable _machineIdTable(_$SystemDatabase db) => db
+      .systemMachines
+      .createAlias('processes__machine_id__system_machines__id');
+
+  $$SystemMachinesTableProcessedTableManager? get machineId {
+    final $_column = $_itemColumn<int>('machine_id');
+    if ($_column == null) return null;
+    final manager = $$SystemMachinesTableTableManager(
+      $_db,
+      $_db.systemMachines,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_machineIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
 
   static $SensorsTable _activationSensorIdTable(_$SystemDatabase db) =>
       db.sensors.createAlias('processes__activation_sensor_id__sensors__id');
@@ -5485,6 +6027,29 @@ class $$ProcessesTableFilterComposer
     column: $table.order,
     builder: (column) => ColumnFilters(column),
   );
+
+  $$SystemMachinesTableFilterComposer get machineId {
+    final $$SystemMachinesTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableFilterComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   $$SensorsTableFilterComposer get activationSensorId {
     final $$SensorsTableFilterComposer composer = $composerBuilder(
@@ -5609,6 +6174,29 @@ class $$ProcessesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  $$SystemMachinesTableOrderingComposer get machineId {
+    final $$SystemMachinesTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableOrderingComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
   $$SensorsTableOrderingComposer get activationSensorId {
     final $$SensorsTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -5650,6 +6238,29 @@ class $$ProcessesTableAnnotationComposer
 
   GeneratedColumn<int> get order =>
       $composableBuilder(column: $table.order, builder: (column) => column);
+
+  $$SystemMachinesTableAnnotationComposer get machineId {
+    final $$SystemMachinesTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.machineId,
+      referencedTable: $db.systemMachines,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SystemMachinesTableAnnotationComposer(
+            $db: $db,
+            $table: $db.systemMachines,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
 
   $$SensorsTableAnnotationComposer get activationSensorId {
     final $$SensorsTableAnnotationComposer composer = $composerBuilder(
@@ -5764,6 +6375,7 @@ class $$ProcessesTableTableManager
           (ProcessRow, $$ProcessesTableReferences),
           ProcessRow,
           PrefetchHooks Function({
+            bool machineId,
             bool activationSensorId,
             bool processMotorsRefs,
             bool processServosRefs,
@@ -5786,11 +6398,13 @@ class $$ProcessesTableTableManager
                 Value<int> id = const Value.absent(),
                 Value<String> name = const Value.absent(),
                 Value<int> order = const Value.absent(),
+                Value<int?> machineId = const Value.absent(),
                 Value<int?> activationSensorId = const Value.absent(),
               }) => ProcessesCompanion(
                 id: id,
                 name: name,
                 order: order,
+                machineId: machineId,
                 activationSensorId: activationSensorId,
               ),
           createCompanionCallback:
@@ -5798,11 +6412,13 @@ class $$ProcessesTableTableManager
                 Value<int> id = const Value.absent(),
                 required String name,
                 required int order,
+                Value<int?> machineId = const Value.absent(),
                 Value<int?> activationSensorId = const Value.absent(),
               }) => ProcessesCompanion.insert(
                 id: id,
                 name: name,
                 order: order,
+                machineId: machineId,
                 activationSensorId: activationSensorId,
               ),
           withReferenceMapper: (p0) => p0
@@ -5815,6 +6431,7 @@ class $$ProcessesTableTableManager
               .toList(),
           prefetchHooksCallback:
               ({
+                machineId = false,
                 activationSensorId = false,
                 processMotorsRefs = false,
                 processServosRefs = false,
@@ -5843,6 +6460,19 @@ class $$ProcessesTableTableManager
                           dynamic
                         >
                       >(state) {
+                        if (machineId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.machineId,
+                                    referencedTable: $$ProcessesTableReferences
+                                        ._machineIdTable(db),
+                                    referencedColumn: $$ProcessesTableReferences
+                                        ._machineIdTable(db)
+                                        .id,
+                                  )
+                                  as T;
+                        }
                         if (activationSensorId) {
                           state =
                               state.withJoin(
@@ -5942,6 +6572,7 @@ typedef $$ProcessesTableProcessedTableManager =
       (ProcessRow, $$ProcessesTableReferences),
       ProcessRow,
       PrefetchHooks Function({
+        bool machineId,
         bool activationSensorId,
         bool processMotorsRefs,
         bool processServosRefs,
@@ -5956,6 +6587,7 @@ typedef $$ProcessMotorsTableCreateCompanionBuilder =
       required String name,
       required int order,
       required double steps,
+      Value<double> speed,
     });
 typedef $$ProcessMotorsTableUpdateCompanionBuilder =
     ProcessMotorsCompanion Function({
@@ -5965,6 +6597,7 @@ typedef $$ProcessMotorsTableUpdateCompanionBuilder =
       Value<String> name,
       Value<int> order,
       Value<double> steps,
+      Value<double> speed,
     });
 
 final class $$ProcessMotorsTableReferences
@@ -6063,6 +6696,11 @@ class $$ProcessMotorsTableFilterComposer
 
   ColumnFilters<double> get steps => $composableBuilder(
     column: $table.steps,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<double> get speed => $composableBuilder(
+    column: $table.speed,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6168,6 +6806,11 @@ class $$ProcessMotorsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<double> get speed => $composableBuilder(
+    column: $table.speed,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ProcessesTableOrderingComposer get processId {
     final $$ProcessesTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6235,6 +6878,9 @@ class $$ProcessMotorsTableAnnotationComposer
 
   GeneratedColumn<double> get steps =>
       $composableBuilder(column: $table.steps, builder: (column) => column);
+
+  GeneratedColumn<double> get speed =>
+      $composableBuilder(column: $table.speed, builder: (column) => column);
 
   $$ProcessesTableAnnotationComposer get processId {
     final $$ProcessesTableAnnotationComposer composer = $composerBuilder(
@@ -6349,6 +6995,7 @@ class $$ProcessMotorsTableTableManager
                 Value<String> name = const Value.absent(),
                 Value<int> order = const Value.absent(),
                 Value<double> steps = const Value.absent(),
+                Value<double> speed = const Value.absent(),
               }) => ProcessMotorsCompanion(
                 id: id,
                 processId: processId,
@@ -6356,6 +7003,7 @@ class $$ProcessMotorsTableTableManager
                 name: name,
                 order: order,
                 steps: steps,
+                speed: speed,
               ),
           createCompanionCallback:
               ({
@@ -6365,6 +7013,7 @@ class $$ProcessMotorsTableTableManager
                 required String name,
                 required int order,
                 required double steps,
+                Value<double> speed = const Value.absent(),
               }) => ProcessMotorsCompanion.insert(
                 id: id,
                 processId: processId,
@@ -6372,6 +7021,7 @@ class $$ProcessMotorsTableTableManager
                 name: name,
                 order: order,
                 steps: steps,
+                speed: speed,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -6497,6 +7147,7 @@ typedef $$ProcessServosTableCreateCompanionBuilder =
       required String name,
       required int order,
       required double openValue,
+      Value<double> speed,
     });
 typedef $$ProcessServosTableUpdateCompanionBuilder =
     ProcessServosCompanion Function({
@@ -6506,6 +7157,7 @@ typedef $$ProcessServosTableUpdateCompanionBuilder =
       Value<String> name,
       Value<int> order,
       Value<double> openValue,
+      Value<double> speed,
     });
 
 final class $$ProcessServosTableReferences
@@ -6578,6 +7230,11 @@ class $$ProcessServosTableFilterComposer
 
   ColumnFilters<double> get openValue => $composableBuilder(
     column: $table.openValue,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<double> get speed => $composableBuilder(
+    column: $table.speed,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6657,6 +7314,11 @@ class $$ProcessServosTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<double> get speed => $composableBuilder(
+    column: $table.speed,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$ProcessesTableOrderingComposer get processId {
     final $$ProcessesTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6724,6 +7386,9 @@ class $$ProcessServosTableAnnotationComposer
 
   GeneratedColumn<double> get openValue =>
       $composableBuilder(column: $table.openValue, builder: (column) => column);
+
+  GeneratedColumn<double> get speed =>
+      $composableBuilder(column: $table.speed, builder: (column) => column);
 
   $$ProcessesTableAnnotationComposer get processId {
     final $$ProcessesTableAnnotationComposer composer = $composerBuilder(
@@ -6808,6 +7473,7 @@ class $$ProcessServosTableTableManager
                 Value<String> name = const Value.absent(),
                 Value<int> order = const Value.absent(),
                 Value<double> openValue = const Value.absent(),
+                Value<double> speed = const Value.absent(),
               }) => ProcessServosCompanion(
                 id: id,
                 processId: processId,
@@ -6815,6 +7481,7 @@ class $$ProcessServosTableTableManager
                 name: name,
                 order: order,
                 openValue: openValue,
+                speed: speed,
               ),
           createCompanionCallback:
               ({
@@ -6824,6 +7491,7 @@ class $$ProcessServosTableTableManager
                 required String name,
                 required int order,
                 required double openValue,
+                Value<double> speed = const Value.absent(),
               }) => ProcessServosCompanion.insert(
                 id: id,
                 processId: processId,
@@ -6831,6 +7499,7 @@ class $$ProcessServosTableTableManager
                 name: name,
                 order: order,
                 openValue: openValue,
+                speed: speed,
               ),
           withReferenceMapper: (p0) => p0
               .map(

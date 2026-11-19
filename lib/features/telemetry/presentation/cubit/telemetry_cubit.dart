@@ -9,7 +9,7 @@ import '../../data/parsers/telemetry_parser.dart';
 import '../../data/simulators/arduino_serial_simulator.dart';
 import '../../domain/entities/sensor_reading.dart';
 
-enum TelemetrySource { serial, serialSent, simulated }
+enum TelemetrySource { serial, peerSerial, serialSent, simulated }
 
 class TelemetryLogEntry extends Equatable {
   const TelemetryLogEntry({required this.line, required this.source});
@@ -91,12 +91,15 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   final ArduinoSerialSimulator _simulator;
   final RingBuffer<SensorReading> _history;
   final RingBuffer<TelemetryLogEntry> _console;
+  final _lineEvents = StreamController<TelemetryLogEntry>.broadcast();
   final List<String> _channels = [];
   final Stopwatch _rateWatch = Stopwatch();
 
   late final StreamSubscription<String> _lineSub;
   late final StreamSubscription<String> _simulationSub;
   late final Timer _timer;
+
+  Stream<TelemetryLogEntry> get lineEvents => _lineEvents.stream;
 
   int _seq = 0;
   int _version = 0;
@@ -114,6 +117,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     if (text.isEmpty) return;
 
     _console.add(TelemetryLogEntry(line: text, source: source));
+    _lineEvents.add(TelemetryLogEntry(line: text, source: source));
     if (text.startsWith('STATE,')) {
       _machineState = text.substring('STATE,'.length);
     } else if (text.startsWith('EVT,SERVO,')) {
@@ -171,7 +175,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   }
 
   void ingestPeerLine(String line) {
-    _onLine(line, TelemetrySource.serial);
+    _onLine(line, TelemetrySource.peerSerial);
   }
 
   void runSimulatedRoute() {
@@ -229,6 +233,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     await _lineSub.cancel();
     await _simulationSub.cancel();
     await _simulator.dispose();
+    await _lineEvents.close();
     return super.close();
   }
 }

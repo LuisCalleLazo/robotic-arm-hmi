@@ -83,6 +83,9 @@ class SystemLocalDataSource {
         db.servos,
       )..where((table) => table.machineId.isIn(machineIds))).go();
       await (db.delete(
+        db.sensors,
+      )..where((table) => table.machineId.isIn(machineIds))).go();
+      await (db.delete(
         db.systemMachines,
       )..where((table) => table.parentMachineId.equals(id))).go();
       await (db.delete(
@@ -101,6 +104,7 @@ class SystemLocalDataSource {
             name: row.name,
             order: row.order,
             activationSensorId: row.activationSensorId,
+            machineId: row.machineId,
           ),
         )
         .toList();
@@ -115,6 +119,7 @@ class SystemLocalDataSource {
             id: Value(process.id),
             name: process.name,
             order: process.order,
+            machineId: Value(process.machineId),
             activationSensorId: Value(process.activationSensorId),
           ),
         );
@@ -129,7 +134,14 @@ class SystemLocalDataSource {
     final db = await _databaseManager.getDatabase();
     final rows = await db.select(db.sensors).get();
     return rows
-        .map((row) => Sensor(id: row.id, key: row.key, name: row.name))
+        .map(
+          (row) => Sensor(
+            id: row.id,
+            machineId: row.machineId,
+            key: row.key,
+            name: row.name,
+          ),
+        )
         .toList();
   }
 
@@ -140,6 +152,7 @@ class SystemLocalDataSource {
         .insertOnConflictUpdate(
           SensorsCompanion.insert(
             id: Value(sensor.id),
+            machineId: Value(sensor.machineId),
             key: sensor.key,
             name: sensor.name,
           ),
@@ -233,6 +246,7 @@ class SystemLocalDataSource {
             name: row.name,
             order: row.order,
             steps: row.steps,
+            speed: row.speed,
           ),
         )
         .toList();
@@ -250,8 +264,16 @@ class SystemLocalDataSource {
             name: processMotor.name,
             order: processMotor.order,
             steps: processMotor.steps,
+            speed: Value(processMotor.speed),
           ),
         );
+  }
+
+  Future<void> deleteProcessMotor(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await (db.delete(
+      db.processMotors,
+    )..where((table) => table.id.equals(id))).go();
   }
 
   Future<List<ProcessServo>> getProcessServos(int processId) async {
@@ -270,6 +292,7 @@ class SystemLocalDataSource {
             name: row.name,
             order: row.order,
             openValue: row.openValue,
+            speed: row.speed,
           ),
         )
         .toList();
@@ -287,8 +310,16 @@ class SystemLocalDataSource {
             name: processServo.name,
             order: processServo.order,
             openValue: processServo.openValue,
+            speed: Value(processServo.speed),
           ),
         );
+  }
+
+  Future<void> deleteProcessServo(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await (db.delete(
+      db.processServos,
+    )..where((table) => table.id.equals(id))).go();
   }
 
   Future<List<SystemPosition>> getSystemPositions() async {

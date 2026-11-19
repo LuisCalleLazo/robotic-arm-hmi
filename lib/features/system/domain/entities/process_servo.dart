@@ -5,6 +5,7 @@ class ProcessServo {
   final String name;
   final int order;
   final double openValue;
+  final double speed;
 
   ProcessServo({
     required this.id,
@@ -13,5 +14,6 @@ class ProcessServo {
     required this.name,
     required this.order,
     required this.openValue,
+    this.speed = 60,
   });
 }

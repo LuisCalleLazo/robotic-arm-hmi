@@ -28,6 +28,8 @@ abstract interface class SystemRepository {
 
   Future<List<ProcessMotors>> getProcessMotors(int processId);
   Future<void> saveProcessMotor(ProcessMotors processMotor);
+  Future<void> deleteProcessMotor(int id);
   Future<List<ProcessServo>> getProcessServos(int processId);
   Future<void> saveProcessServo(ProcessServo processServo);
+  Future<void> deleteProcessServo(int id);
 }

@@ -5,6 +5,7 @@ class ProcessMotors {
   final String name;
   final int order;
   final double steps;
+  final double speed;
 
   ProcessMotors({
     required this.id,
@@ -13,5 +14,6 @@ class ProcessMotors {
     required this.name,
     required this.order,
     required this.steps,
+    this.speed = 5000,
   });
 }
