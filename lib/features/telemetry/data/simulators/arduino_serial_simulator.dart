@@ -18,14 +18,19 @@ class ArduinoSerialSimulator {
   final Set<String> _referencedAxes = {};
   Timer? _timer;
   bool _running = false;
+  bool _paused = false;
   String _phase = 'idle';
   String _state = 'IDLE';
+  String _resumeState = 'IDLE';
+  int _servoAngle = 0;
   int _ticks = 0;
   int _homingIndex = 0;
   int _routeStep = 0;
   int _moveAxis = 0;
   int _moveTarget = 0;
   List<int> _moveStart = [];
+  final Map<int, int> _moveTargets = {};
+  bool _protocolAxisMove = false;
 
   Stream<String> get lines => _lines.stream;
   bool get isRunning => _running;
@@ -33,11 +38,14 @@ class ArduinoSerialSimulator {
   void start() {
     if (_running) return;
     _running = true;
+    _paused = false;
+    _servoAngle = 0;
     _referencedAxes.clear();
     _state = 'IDLE';
     _phase = 'homing';
     _ticks = 0;
     _homingIndex = 0;
+    _moveTargets.clear();
     _position.fillRange(0, _position.length, 0);
 
     _emit('EVT,BOOT');
@@ -57,13 +65,82 @@ class ArduinoSerialSimulator {
 
   void sendCommand(String text) {
     if (!_running) return;
-    final command = text.replaceAll(RegExp(r'[ \t=]'), '').toUpperCase();
+    final trimmed = text.trim().toUpperCase();
+    final tokens = trimmed.split(RegExp(r'\s+'));
+    if (tokens.length > 1 && tokens.every((token) => token.startsWith('BC'))) {
+      _emit('CMD,${tokens.join(' ')}');
+      _sendBcGroup(tokens);
+      return;
+    }
+    var command = text.replaceAll(RegExp(r'[ \t=]'), '').toUpperCase();
     if (command.isEmpty) return;
     _emit('CMD,$command');
+
+    var relativeMotorCommand = false;
+    var protocolStop = false;
+    if (command.startsWith('BC')) {
+      if (command == 'BCSTOP') {
+        command = 'STOP';
+        protocolStop = true;
+      } else if (command == 'BCPAUSE') {
+        command = 'PAUSE';
+      } else if (command == 'BCPLAY') {
+        command = 'PLAY';
+      } else if (command == 'BC?') {
+        command = 'POS';
+      } else if (command.startsWith('BCS')) {
+        command = 'S${command.substring(3)}';
+      } else if (command.startsWith('BCVS')) {
+        _emit('CFG,VELS,${command.substring(4)}');
+        return;
+      } else if (command.startsWith('BCV')) {
+        _emit('CFG,VEL,${command.substring(3)}');
+        return;
+      } else if (command.startsWith('BCT')) {
+        _emit('CFG,TELEM,${command.substring(3)}');
+        return;
+      } else {
+        command = command.substring(2);
+        relativeMotorCommand = true;
+      }
+    }
 
     if (command == '?' || command == 'POS' || command == 'POSICION') {
       _emit('STATE,$_state');
       _emitPosition();
+      return;
+    }
+    if (command == 'PAUSE') {
+      if (!_paused) {
+        _resumeState = _state;
+        _paused = true;
+        _emit('EVT,PAUSE');
+        _emit('STATE,PAUSED');
+      }
+      return;
+    }
+    if (command == 'PLAY') {
+      if (_paused) {
+        _paused = false;
+        _state = _resumeState;
+        _emit('EVT,PLAY');
+        _emit('STATE,$_state');
+      }
+      return;
+    }
+    if (command.startsWith('S')) {
+      final values = command.substring(1).split(':');
+      final angle = int.tryParse(values.first);
+      final speed = values.length > 1 ? int.tryParse(values[1]) : null;
+      if (angle == null ||
+          (values.length > 1 && speed == null) ||
+          (speed != null && (speed < 0 || speed > 720))) {
+        _emit('ERR,BAD_FORMAT');
+      } else {
+        _servoAngle = angle.clamp(0, 180);
+        _emit('EVT,SERVO,$_servoAngle');
+        _emit('BCS,0,$_servoAngle,$_servoAngle');
+      }
       return;
     }
     if (_state == 'ERROR') {
@@ -74,8 +151,10 @@ class ArduinoSerialSimulator {
       _state = 'IDLE';
       _phase = 'idle';
       _referencedAxes.clear();
+      _moveTargets.clear();
       _emit('EVT,STOPPED');
       _emit('STATE,IDLE');
+      if (protocolStop) _emit('BC,EVT,STOP');
       return;
     }
     if (command == 'R' || command == 'START' || command == 'INICIAR') {
@@ -106,7 +185,7 @@ class ArduinoSerialSimulator {
       return;
     }
 
-    final target = int.tryParse(command.substring(1));
+    final target = int.tryParse(command.substring(1).split(':').first);
     if (target == null) {
       _emit('ERR,BAD_FORMAT');
       return;
@@ -117,12 +196,103 @@ class ArduinoSerialSimulator {
     }
     const limits = [30450, 11834, 3426, 47829];
     _moveAxis = axisIndex;
-    _moveTarget = target.clamp(0, limits[axisIndex]);
+    _moveTarget =
+        (relativeMotorCommand ? _position[axisIndex] + target : target).clamp(
+          0,
+          limits[axisIndex],
+        );
+    _protocolAxisMove = relativeMotorCommand;
     _moveStart = List<int>.from(_position);
     _state = 'MOVING_AXIS';
     _setPhase('axisMove');
     _emit('EVT,MOVE_START,${_axes[axisIndex]},$_moveTarget');
+    if (_protocolAxisMove) {
+      _emit('BC,EVT,INICIO,BC${_axes[axisIndex]},$target');
+    }
     _emit('STATE,MOVING_AXIS');
+  }
+
+  void _sendBcGroup(List<String> tokens) {
+    if (_state == 'ERROR') {
+      _emit('ERR,RESET_REQUIRED');
+      return;
+    }
+    if (_state != 'IDLE') {
+      _emit('BC,ERR,BUSY');
+      return;
+    }
+
+    final motors = <(int, int)>[];
+    final servos = <int>[];
+    for (final token in tokens) {
+      final servoMatch = RegExp(r'^BCS(-?\d+)(?::(\d+))?$').firstMatch(token);
+      if (servoMatch != null) {
+        final angle = int.tryParse(servoMatch.group(1)!);
+        final speed = int.tryParse(servoMatch.group(2) ?? '0');
+        if (angle == null || speed == null || speed < 0 || speed > 720) {
+          _emit('BC,ERR,BADSPEED,$token');
+          return;
+        }
+        servos.add(angle.clamp(0, 180));
+        continue;
+      }
+
+      final motorMatch = RegExp(
+        r'^BC([XYAZ])(-?\d+)(?::(\d+))?$',
+      ).firstMatch(token);
+      if (motorMatch == null) {
+        _emit('BC,ERR,UNKNOWN,$token');
+        return;
+      }
+      final axis = motorMatch.group(1)!;
+      final axisIndex = _axisIndex(axis);
+      final steps = int.tryParse(motorMatch.group(2)!);
+      final speed = int.tryParse(motorMatch.group(3) ?? '0');
+      if (axisIndex == null || steps == null) {
+        _emit('BC,ERR,UNKNOWN,$token');
+        return;
+      }
+      if (speed == null || (speed != 0 && (speed < 100 || speed > 10000))) {
+        _emit('BC,ERR,BADSPEED,$token');
+        return;
+      }
+      if (!_referencedAxes.contains(axis)) {
+        _emit('ERR,NOT_REFERENCED,$axis');
+        return;
+      }
+      if (motors.any((item) => item.$1 == axisIndex)) {
+        _emit('BC,ERR,BUSY,BC$axis');
+        return;
+      }
+      motors.add((axisIndex, steps));
+    }
+
+    for (final angle in servos) {
+      _servoAngle = angle;
+      _emit('EVT,SERVO,$_servoAngle');
+      _emit('BCS,0,$_servoAngle,$_servoAngle');
+    }
+    if (motors.isEmpty) return;
+
+    const limits = [30450, 11834, 3426, 47829];
+    _moveStart = List<int>.from(_position);
+    _moveTargets
+      ..clear()
+      ..addEntries(
+        motors.map(
+          (item) => MapEntry(
+            item.$1,
+            (_position[item.$1] + item.$2).clamp(0, limits[item.$1]),
+          ),
+        ),
+      );
+    _state = 'MOVING_AXIS';
+    _emit('EVT,MOVE_START,BATCH,${motors.length}');
+    for (final item in motors) {
+      _emit('BC,EVT,INICIO,BC${_axes[item.$1]},${item.$2}');
+    }
+    _emit('STATE,MOVING_AXIS');
+    _setPhase('multiMove');
   }
 
   Future<void> dispose() async {
@@ -156,6 +326,7 @@ class ArduinoSerialSimulator {
   }
 
   void _tick() {
+    if (_paused) return;
     _ticks++;
     switch (_phase) {
       case 'homing':
@@ -223,6 +394,25 @@ class ArduinoSerialSimulator {
         _emitPosition();
         if (_ticks < 6) return;
         _emit('EVT,MOVE_DONE,${_axes[_moveAxis]},$_moveTarget');
+        if (_protocolAxisMove) {
+          _emit('BC,EVT,FIN,BC${_axes[_moveAxis]},${_position[_moveAxis]}');
+          _protocolAxisMove = false;
+        }
+        _state = 'IDLE';
+        _emit('STATE,IDLE');
+        _setPhase('idle');
+      case 'multiMove':
+        final target = List<int>.from(_position);
+        for (final entry in _moveTargets.entries) {
+          target[entry.key] = entry.value;
+        }
+        _interpolate(target, _ticks, 6);
+        _emitPosition();
+        if (_ticks < 6) return;
+        for (final entry in _moveTargets.entries) {
+          _emit('BC,EVT,FIN,BC${_axes[entry.key]},${_position[entry.key]}');
+        }
+        _moveTargets.clear();
         _state = 'IDLE';
         _emit('STATE,IDLE');
         _setPhase('idle');

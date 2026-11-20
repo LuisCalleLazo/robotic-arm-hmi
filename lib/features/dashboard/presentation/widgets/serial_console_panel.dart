@@ -2,11 +2,46 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
+import 'scara_arm_hmi_panel.dart';
 
-class SerialConsolePanel extends StatelessWidget {
-  const SerialConsolePanel({required this.onClose, super.key});
+class SerialConsolePanel extends StatefulWidget {
+  const SerialConsolePanel({
+    required this.onClose,
+    required this.onSend,
+    required this.canSend,
+    super.key,
+  });
 
   final VoidCallback onClose;
+  final ArmCommandSender onSend;
+  final bool canSend;
+
+  @override
+  State<SerialConsolePanel> createState() => _SerialConsolePanelState();
+}
+
+class _SerialConsolePanelState extends State<SerialConsolePanel> {
+  final _commandController = TextEditingController();
+
+  @override
+  void dispose() {
+    _commandController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    final command = _commandController.text.trim();
+    if (command.isEmpty) return;
+    try {
+      await widget.onSend(command);
+      if (mounted) _commandController.clear();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('No se pudo enviar: $error')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -29,7 +64,7 @@ class SerialConsolePanel extends StatelessWidget {
             subtitle: const Text('Mensajes enviados y recibidos'),
             trailing: IconButton(
               tooltip: 'Cerrar panel',
-              onPressed: onClose,
+              onPressed: widget.onClose,
               icon: const Icon(Icons.close),
             ),
           ),
@@ -85,6 +120,32 @@ class SerialConsolePanel extends StatelessWidget {
                       );
                     },
                   ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _commandController,
+                    enabled: widget.canSend,
+                    onSubmitted: (_) => _send(),
+                    decoration: const InputDecoration(
+                      labelText: 'Comando serial',
+                      hintText: 'Ej. BC?',
+                      isDense: true,
+                      prefixIcon: Icon(Icons.terminal),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  tooltip: 'Enviar comando',
+                  onPressed: widget.canSend ? _send : null,
+                  icon: const Icon(Icons.send),
+                ),
+              ],
+            ),
           ),
         ],
       ),

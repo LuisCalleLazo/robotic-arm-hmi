@@ -5,6 +5,7 @@ import 'package:robotic_arm_hmi/features/peer_to_peer/domain/entities/peer_entit
 import 'package:robotic_arm_hmi/features/peer_to_peer/domain/repositories/peer_repository.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/machine_configuration.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/motor.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/process.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/system_machine.dart';
 import 'package:robotic_arm_hmi/features/system/domain/repositories/system_repository.dart';
 import 'package:robotic_arm_hmi/features/system/domain/services/system_configuration_service.dart';
@@ -47,9 +48,51 @@ void main() {
         service.saveMachine(_configuration(includeComponent: false)),
         throwsStateError,
       );
-      expect(peer.sent, hasLength(2));
+      expect(
+        peer.sent.where(
+          (message) =>
+              message.type == PeerMessageType.configuration &&
+              message.payload['kind'] == 'machine',
+        ),
+        hasLength(2),
+      );
     },
   );
+
+  test('slave accepts an activation sensor from another machine', () async {
+    await service.saveMachine(_configuration());
+    peer.messagesController.add(
+      PeerMessage(
+        type: PeerMessageType.telemetry,
+        payload: {
+          'kind': 'sensor_catalog',
+          'sensors': [
+            {'id': 90, 'machineId': 80, 'key': 'CGC', 'name': 'Cinta grande'},
+          ],
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(service.sharedSensors.single.id, 90);
+    await service.saveProcessDefinition(
+      Process(
+        id: 100,
+        name: 'Tomar objeto',
+        order: 0,
+        activationSensorId: 90,
+        machineId: 1,
+      ),
+    );
+    expect(
+      peer.sent.any(
+        (message) =>
+            message.type == PeerMessageType.configuration &&
+            message.payload['kind'] == 'process_definition',
+      ),
+      isTrue,
+    );
+  });
 }
 
 MachineConfiguration _configuration({
@@ -89,6 +132,7 @@ class _FakePeerRepository implements PeerRepository {
   final _sessionChanges = StreamController<PeerSession>.broadcast();
   final _messages = StreamController<PeerMessage>.broadcast();
   final sent = <PeerMessage>[];
+  StreamController<PeerMessage> get messagesController => _messages;
 
   @override
   PeerSession get session => const PeerSession(

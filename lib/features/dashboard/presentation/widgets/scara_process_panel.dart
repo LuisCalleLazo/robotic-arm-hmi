@@ -6,6 +6,56 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 
+class ScaraArmCanvas extends StatelessWidget {
+  const ScaraArmCanvas({
+    required this.x,
+    required this.y,
+    required this.z,
+    required this.a,
+    required this.gripperOpen,
+    required this.machineState,
+    super.key,
+  });
+
+  final double x;
+  final double y;
+  final double z;
+  final double a;
+  final double gripperOpen;
+  final String machineState;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return CustomPaint(
+      painter: _ScaraProcessPainter(
+        x: x * _ScaraProcessPainter._maxX,
+        y: y * _ScaraProcessPainter._maxY,
+        a: a * _ScaraProcessPainter._maxA,
+        z: z * _ScaraProcessPainter._maxZ,
+        gripperClosed: gripperOpen <= 0.02,
+        gripperOpening: gripperOpen,
+        machineState: machineState,
+        armCount: 1,
+        sensorEnabled: false,
+        sensorDetected: false,
+        objectOnBelt: false,
+        objectPicked: false,
+        objectDelivered: false,
+        objectProgress: 0,
+        accent: colors.primary,
+        textColor: colors.onSurface,
+        mutedColor: colors.onSurfaceVariant,
+        surfaceColor: colors.surfaceContainerHighest,
+        gridColor: colors.outlineVariant,
+        showBelt: false,
+        showReadout: false,
+      ),
+      child: const SizedBox.expand(),
+    );
+  }
+}
+
 class ScaraProcessPanel extends StatefulWidget {
   const ScaraProcessPanel({super.key});
 
@@ -249,11 +299,14 @@ class _ScaraProcessPainter extends CustomPainter {
     required this.objectPicked,
     required this.objectDelivered,
     required this.objectProgress,
+    this.gripperOpening,
     required this.accent,
     required this.textColor,
     required this.mutedColor,
     required this.surfaceColor,
     required this.gridColor,
+    this.showBelt = true,
+    this.showReadout = true,
   });
 
   final double x;
@@ -269,11 +322,14 @@ class _ScaraProcessPainter extends CustomPainter {
   final bool objectPicked;
   final bool objectDelivered;
   final double objectProgress;
+  final double? gripperOpening;
   final Color accent;
   final Color textColor;
   final Color mutedColor;
   final Color surfaceColor;
   final Color gridColor;
+  final bool showBelt;
+  final bool showReadout;
 
   static const double _maxX = 30450;
   static const double _maxY = 11834;
@@ -289,23 +345,6 @@ class _ScaraProcessPainter extends CustomPainter {
       size.width * 0.95,
       size.height * 0.13,
     );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(beltRect, const Radius.circular(9)),
-      Paint()..color = surfaceColor.withValues(alpha: 0.85),
-    );
-
-    final rollerPaint = Paint()
-      ..color = gridColor.withValues(alpha: 0.65)
-      ..strokeWidth = 1;
-    for (var i = 1; i < 12; i++) {
-      final rollerX = beltRect.left + beltRect.width * i / 12;
-      canvas.drawLine(
-        Offset(rollerX, beltRect.top + 4),
-        Offset(rollerX, beltRect.bottom - 4),
-        rollerPaint,
-      );
-    }
-
     final pick = _geometry(size, 8000, 5500, 41000, 1200);
     final drop = _geometry(size, 16000, 5500, 41000, 1200);
     final sensorX = pick.toolTip.dx.clamp(
@@ -316,14 +355,32 @@ class _ScaraProcessPainter extends CustomPainter {
       beltRect.left + 12,
       beltRect.right - 12,
     );
-    _drawDropZone(canvas, Offset(dropX, beltTop), textColor, gridColor);
-    _drawSensor(
-      canvas,
-      Offset(sensorX, beltTop),
-      enabled: sensorEnabled,
-      detected: sensorDetected,
-    );
-    _drawBeltFlow(canvas, beltRect);
+    if (showBelt) {
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(beltRect, const Radius.circular(9)),
+        Paint()..color = surfaceColor.withValues(alpha: 0.85),
+      );
+      final rollerPaint = Paint()
+        ..color = gridColor.withValues(alpha: 0.65)
+        ..strokeWidth = 1;
+      for (var i = 1; i < 12; i++) {
+        final rollerX = beltRect.left + beltRect.width * i / 12;
+        canvas.drawLine(
+          Offset(rollerX, beltRect.top + 4),
+          Offset(rollerX, beltRect.bottom - 4),
+          rollerPaint,
+        );
+      }
+
+      _drawDropZone(canvas, Offset(dropX, beltTop), textColor, gridColor);
+      _drawSensor(
+        canvas,
+        Offset(sensorX, beltTop),
+        enabled: sensorEnabled,
+        detected: sensorDetected,
+      );
+      _drawBeltFlow(canvas, beltRect);
+    }
 
     for (var index = armCount - 1; index >= 0; index--) {
       final active = index == 0;
@@ -343,13 +400,13 @@ class _ScaraProcessPainter extends CustomPainter {
       }
     }
 
-    if (objectOnBelt) {
+    if (showBelt && objectOnBelt) {
       final objectX =
           beltRect.left + (sensorX - beltRect.left) * objectProgress / 0.62;
       _drawObject(canvas, Offset(objectX, beltTop - 8), Colors.orangeAccent);
-    } else if (objectDelivered) {
+    } else if (showBelt && objectDelivered) {
       _drawObject(canvas, Offset(dropX, beltTop - 8), Colors.lightGreenAccent);
-    } else if (objectPicked) {
+    } else if (showBelt && objectPicked) {
       _drawObject(
         canvas,
         _geometry(size, x, y, z, a).toolTip,
@@ -357,21 +414,23 @@ class _ScaraProcessPainter extends CustomPainter {
       );
     }
 
-    _drawLabel(
-      canvas,
-      'X ${x.round()}  Y ${y.round()}  A ${a.round()}  Z ${z.round()}',
-      Offset(8, size.height - 2),
-      mutedColor,
-      10,
-    );
-    _drawLabel(
-      canvas,
-      machineState ?? 'Sin datos del brazo',
-      Offset(size.width - 8, size.height - 2),
-      machineState == 'ERROR' ? Colors.redAccent : accent,
-      10,
-      alignRight: true,
-    );
+    if (showReadout) {
+      _drawLabel(
+        canvas,
+        'X ${x.round()}  Y ${y.round()}  A ${a.round()}  Z ${z.round()}',
+        Offset(8, size.height - 2),
+        mutedColor,
+        10,
+      );
+      _drawLabel(
+        canvas,
+        machineState ?? 'Sin datos del brazo',
+        Offset(size.width - 8, size.height - 2),
+        machineState == 'ERROR' ? Colors.redAccent : accent,
+        10,
+        alignRight: true,
+      );
+    }
   }
 
   _ScaraGeometry _geometry(
@@ -535,6 +594,7 @@ class _ScaraProcessPainter extends CustomPainter {
       geometry.toolTip,
       geometry.wristAngle,
       gripperClosed && active,
+      gripperOpening,
       color,
     );
 
@@ -599,13 +659,18 @@ class _ScaraProcessPainter extends CustomPainter {
     Offset tip,
     double angle,
     bool closed,
+    double? opening,
     Color color,
   ) {
     final fingerPaint = Paint()
       ..color = Colors.blueGrey.shade200
       ..strokeWidth = 3
       ..strokeCap = StrokeCap.round;
-    final jawGap = closed ? 3.0 : 8.0;
+    final jawGap = opening == null
+        ? closed
+              ? 3.0
+              : 8.0
+        : 3.0 + opening.clamp(0, 1) * 7.0;
     final jawAngle = math.sin(angle) * 0.22;
 
     for (final side in [-1.0, 1.0]) {

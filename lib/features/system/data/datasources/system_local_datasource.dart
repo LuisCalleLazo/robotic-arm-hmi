@@ -127,7 +127,32 @@ class SystemLocalDataSource {
 
   Future<void> deleteProcess(int id) async {
     final db = await _databaseManager.getDatabase();
-    await (db.delete(db.processes)..where((table) => table.id.equals(id))).go();
+    await db.transaction(() async {
+      await (db.delete(
+        db.processServos,
+      )..where((table) => table.processId.equals(id))).go();
+      await (db.delete(
+        db.processMotors,
+      )..where((table) => table.processId.equals(id))).go();
+      await (db.delete(
+        db.processes,
+      )..where((table) => table.id.equals(id))).go();
+    });
+  }
+
+  Future<bool> hasProcessHistory(int id) async {
+    final db = await _databaseManager.getDatabase();
+    final processHistory = db.select(db.processHistorics)
+      ..where((table) => table.processId.equals(id))
+      ..limit(1);
+    if ((await processHistory.get()).isNotEmpty) return true;
+
+    final processMotors = db.select(db.processMotors)
+      ..where((table) => table.processId.equals(id));
+    for (final motor in await processMotors.get()) {
+      if (await hasProcessMotorHistory(motor.id)) return true;
+    }
+    return false;
   }
 
   Future<List<Sensor>> getSensors() async {

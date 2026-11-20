@@ -6,6 +6,7 @@ import '../entities/machine_configuration.dart';
 import '../entities/process.dart';
 import '../entities/process_motors.dart';
 import '../entities/process_servo.dart';
+import '../entities/sensor.dart';
 import '../entities/system_machine.dart';
 import '../repositories/system_repository.dart';
 import 'arduino_process_command_builder.dart';
@@ -18,6 +19,7 @@ class SystemConfigurationService {
        _system = system {
     _messageSub = _peer.messages.listen(_onPeerMessage);
     _sessionSub = _peer.sessionStream.listen(_onSession);
+    _onSession(_peer.session);
   }
 
   final PeerRepository _peer;
@@ -27,11 +29,42 @@ class SystemConfigurationService {
   final Map<int, Process> _localSlaveProcesses = {};
   final Map<int, List<ProcessMotors>> _localSlaveProcessMotors = {};
   final Map<int, List<ProcessServo>> _localSlaveProcessServos = {};
+  final _sensorCatalogChanges = StreamController<void>.broadcast();
+  final _processChanges = StreamController<void>.broadcast();
+  List<Sensor> _sharedSensors = const [];
+  List<SystemMachine> _sharedMachines = const [];
+  bool _sensorCatalogRequested = false;
   late final StreamSubscription<PeerMessage> _messageSub;
   late final StreamSubscription<PeerSession> _sessionSub;
 
   MachineConfiguration? get localSlaveConfiguration =>
       _configurationByClient['local'];
+  List<Sensor> get sharedSensors {
+    final sensors = <int, Sensor>{
+      for (final sensor in _sharedSensors) sensor.id: sensor,
+      for (final sensor
+          in (_configurationByClient['local']?.sensors ?? const <Sensor>[]))
+        sensor.id: sensor,
+    };
+    return List.unmodifiable(sensors.values);
+  }
+
+  List<SystemMachine> get sharedMachines {
+    final machines = <int, SystemMachine>{
+      for (final machine in _sharedMachines) machine.id: machine,
+    };
+    final configuration = _configurationByClient['local'];
+    if (configuration != null) {
+      machines[configuration.machine.id] = configuration.machine;
+      for (final component in configuration.components) {
+        machines[component.id] = component;
+      }
+    }
+    return List.unmodifiable(machines.values);
+  }
+
+  Stream<void> get sensorCatalogChanges => _sensorCatalogChanges.stream;
+  Stream<void> get processChanges => _processChanges.stream;
   List<Process> get localSlaveProcesses =>
       List.unmodifiable(_localSlaveProcesses.values);
 
@@ -44,7 +77,12 @@ class SystemConfigurationService {
   void _onSession(PeerSession session) {
     if (!session.isActive) {
       _machineByClient.clear();
+      _sensorCatalogRequested = false;
       return;
+    }
+    if (session.isSlave && !_sensorCatalogRequested) {
+      _sensorCatalogRequested = true;
+      unawaited(_requestSensorCatalog());
     }
     if (session.isMaster) {
       final connected = session.clients.map((client) => client.id).toSet();
@@ -81,6 +119,7 @@ class SystemConfigurationService {
     }
     _ensureMaster();
     await _saveLocal(configuration);
+    await _publishSensorCatalog();
   }
 
   Future<void> saveProcessConfiguration({
@@ -162,7 +201,66 @@ class SystemConfigurationService {
     await _system.saveProcess(process);
   }
 
+  Future<void> deleteProcess(int processId) async {
+    _ensureMaster();
+    if (await _system.hasProcessHistory(processId)) {
+      throw StateError(
+        'No se puede eliminar el proceso porque tiene históricos asociados.',
+      );
+    }
+    await _system.deleteProcess(processId);
+    await _peer.send(
+      PeerMessage(
+        type: PeerMessageType.telemetry,
+        payload: {'kind': 'process_deleted', 'processId': processId},
+      ),
+    );
+  }
+
   Future<void> _onPeerMessage(PeerMessage message) async {
+    if (_peer.session.isSlave &&
+        message.type == PeerMessageType.telemetry &&
+        message.payload['kind'] == 'process_deleted') {
+      final processId = _int(message.payload['processId']);
+      _localSlaveProcesses.remove(processId);
+      _localSlaveProcessMotors.remove(processId);
+      _localSlaveProcessServos.remove(processId);
+      _processChanges.add(null);
+      return;
+    }
+    if (_peer.session.isSlave &&
+        message.type == PeerMessageType.telemetry &&
+        message.payload['kind'] == 'sensor_catalog') {
+      _sharedSensors = _mapList(message.payload['sensors'])
+          .map(
+            (item) => Sensor(
+              id: _int(item['id']),
+              machineId: _nullableInt(item['machineId']),
+              key: '${item['key'] ?? ''}',
+              name: '${item['name'] ?? ''}',
+            ),
+          )
+          .toList();
+      _sharedMachines = _mapList(message.payload['machines'])
+          .map(
+            (item) => SystemMachine(
+              id: _int(item['id']),
+              name: '${item['name'] ?? ''}',
+              type: '${item['type'] ?? ''}',
+              parentMachineId: _nullableInt(item['parentMachineId']),
+            ),
+          )
+          .toList();
+      _sensorCatalogChanges.add(null);
+      return;
+    }
+    if (_peer.session.isMaster &&
+        message.type == PeerMessageType.telemetry &&
+        message.payload['kind'] == 'sensor_catalog_request') {
+      final senderId = message.senderId;
+      if (senderId != null) await _sendSensorCatalog(senderId);
+      return;
+    }
     if (!_peer.session.isMaster ||
         message.type != PeerMessageType.configuration) {
       return;
@@ -208,6 +306,7 @@ class SystemConfigurationService {
       return;
     }
     await _saveLocal(configuration);
+    await _publishSensorCatalog();
     _machineByClient[clientId] = configuration.machine.id;
     _configurationByClient[clientId] = configuration;
   }
@@ -280,8 +379,8 @@ class SystemConfigurationService {
   }
 
   Future<String?> _validateProcessDefinition(Process process) async {
-    if (process.name.trim().isEmpty || process.order < 0) {
-      return 'El proceso requiere un nombre y un orden válido.';
+    if (process.name.trim().isEmpty) {
+      return 'El proceso requiere un nombre.';
     }
     final machineId = process.machineId;
     if (machineId == null) return 'Selecciona la máquina del proceso.';
@@ -291,10 +390,10 @@ class SystemConfigurationService {
         return 'El proceso debe pertenecer a la máquina del esclavo.';
       }
       if (process.activationSensorId != null &&
-          !configuration.sensors.any(
+          !sharedSensors.any(
             (sensor) => sensor.id == process.activationSensorId,
           )) {
-        return 'El sensor debe pertenecer a la máquina seleccionada.';
+        return 'El sensor de activación no existe.';
       }
       return null;
     }
@@ -302,16 +401,11 @@ class SystemConfigurationService {
     if (!machines.any((machine) => machine.id == machineId)) {
       return 'La máquina seleccionada ya no existe.';
     }
-    final machineIds = _machineIds(machines, machineId);
     final sensorId = process.activationSensorId;
     if (sensorId != null) {
       final sensors = await _system.getSensors();
       final sensor = sensors.where((item) => item.id == sensorId).firstOrNull;
-      if (sensor == null ||
-          (sensor.machineId != null &&
-              !machineIds.contains(sensor.machineId))) {
-        return 'El sensor debe pertenecer a la máquina seleccionada.';
-      }
+      if (sensor == null) return 'El sensor de activación no existe.';
     }
     return null;
   }
@@ -321,8 +415,8 @@ class SystemConfigurationService {
     List<ProcessMotors> motors,
     List<ProcessServo> servos,
   ) async {
-    if (process.name.trim().isEmpty || process.order < 0) {
-      return 'El proceso requiere un nombre y un orden válido.';
+    if (process.name.trim().isEmpty) {
+      return 'El proceso requiere un nombre.';
     }
     if (motors.isEmpty && servos.isEmpty) {
       return 'El proceso debe contener al menos un movimiento.';
@@ -366,10 +460,10 @@ class SystemConfigurationService {
         return 'El proceso debe pertenecer a la máquina del esclavo.';
       }
       if (process.activationSensorId != null &&
-          !configuration.sensors.any(
+          !sharedSensors.any(
             (sensor) => sensor.id == process.activationSensorId,
           )) {
-        return 'El sensor de activación no existe en la máquina del esclavo.';
+        return 'El sensor de activación no existe.';
       }
       if (motors.any(
         (item) =>
@@ -401,11 +495,6 @@ class SystemConfigurationService {
             .where((item) => item.id == process.activationSensorId)
             .firstOrNull;
         if (sensor == null) return 'El sensor de activación no existe.';
-        if (process.machineId != null &&
-            sensor.machineId != null &&
-            !machineIds!.contains(sensor.machineId)) {
-          return 'El sensor debe pertenecer a la máquina del proceso.';
-        }
       }
       final availableMotors = await _system.getMotors();
       final motorById = {for (final motor in availableMotors) motor.id: motor};
@@ -458,6 +547,57 @@ class SystemConfigurationService {
       payload: {'code': 'configuration_rejected', 'message': message},
     ),
   );
+
+  Future<void> _requestSensorCatalog() async {
+    if (!_peer.session.isSlave || !_peer.session.isActive) return;
+    await _peer.send(
+      PeerMessage(
+        type: PeerMessageType.telemetry,
+        payload: {'kind': 'sensor_catalog_request'},
+      ),
+    );
+  }
+
+  Future<void> _publishSensorCatalog() async {
+    if (!_peer.session.isMaster) return;
+    for (final client in _peer.session.clients) {
+      await _sendSensorCatalog(client.id);
+    }
+  }
+
+  Future<void> _sendSensorCatalog(String clientId) async {
+    final sensors = await _system.getSensors();
+    final machines = await _system.getMachines();
+    await _peer.sendToClient(
+      clientId,
+      PeerMessage(
+        type: PeerMessageType.telemetry,
+        payload: {
+          'kind': 'sensor_catalog',
+          'sensors': sensors
+              .map(
+                (sensor) => {
+                  'id': sensor.id,
+                  'machineId': sensor.machineId,
+                  'key': sensor.key,
+                  'name': sensor.name,
+                },
+              )
+              .toList(),
+          'machines': machines
+              .map(
+                (machine) => {
+                  'id': machine.id,
+                  'name': machine.name,
+                  'type': machine.type,
+                  'parentMachineId': machine.parentMachineId,
+                },
+              )
+              .toList(),
+        },
+      ),
+    );
+  }
 
   Future<void> _saveLocal(MachineConfiguration configuration) async {
     final existing = await _system.getMachines();
@@ -625,6 +765,8 @@ class SystemConfigurationService {
   Future<void> dispose() async {
     await _messageSub.cancel();
     await _sessionSub.cancel();
+    await _sensorCatalogChanges.close();
+    await _processChanges.close();
   }
 
   static List<Map<String, dynamic>> _mapList(Object? value) => value is List

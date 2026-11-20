@@ -16,6 +16,7 @@ abstract interface class SystemRepository {
   Future<List<Process>> getProcesses();
   Future<void> saveProcess(Process process);
   Future<void> deleteProcess(int id);
+  Future<bool> hasProcessHistory(int id);
 
   Future<List<Sensor>> getSensors();
   Future<void> saveSensor(Sensor sensor);

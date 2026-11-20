@@ -40,6 +40,9 @@ class SystemRepositoryImpl implements SystemRepository {
   Future<void> deleteProcess(int id) => _dataSource.deleteProcess(id);
 
   @override
+  Future<bool> hasProcessHistory(int id) => _dataSource.hasProcessHistory(id);
+
+  @override
   Future<List<Sensor>> getSensors() => _dataSource.getSensors();
 
   @override

@@ -53,6 +53,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
   StreamSubscription<SerialConnectionState>? _connectionSubscription;
   StreamSubscription<PeerSession>? _peerSubscription;
+  StreamSubscription<void>? _sensorCatalogSubscription;
+  StreamSubscription<void>? _processChangesSubscription;
   PeerRole? _loadedRole;
 
   ConnectionBloc get _connection => GetIt.I<ConnectionBloc>();
@@ -64,6 +66,20 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     super.initState();
     _lineSubscription = _telemetry.lineEvents.listen(_onSerialLine);
     _connectionSubscription = _connection.stream.listen(_onConnectionChanged);
+    final configurationService = GetIt.I<SystemConfigurationService>();
+    _sensorCatalogSubscription = configurationService.sensorCatalogChanges
+        .listen((_) {
+          if (!mounted || !_peer.session.isSlave) return;
+          setState(() => _loading = true);
+          _loadOptions();
+        });
+    _processChangesSubscription = configurationService.processChanges.listen((
+      _,
+    ) {
+      if (!mounted || !_peer.session.isSlave) return;
+      setState(() => _loading = true);
+      _loadOptions();
+    });
     _loadedRole = _peer.session.role;
     _peerSubscription = _peer.sessionStream.listen((session) {
       if (session.role == _loadedRole) return;
@@ -84,6 +100,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     _lineSubscription?.cancel();
     _connectionSubscription?.cancel();
     _peerSubscription?.cancel();
+    _sensorCatalogSubscription?.cancel();
+    _processChangesSubscription?.cancel();
     _readyProbeTimer?.cancel();
     super.dispose();
   }
@@ -94,13 +112,11 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       final List<Process> processes;
       if (_peer.session.isSlave) {
         final configuration = configurationService.localSlaveConfiguration;
-        _allMachines = configuration == null
-            ? const []
-            : [configuration.machine, ...configuration.components];
+        _allMachines = configurationService.sharedMachines;
         _machines = configuration == null ? const [] : [configuration.machine];
         _motors = configuration?.motors ?? const [];
         _servos = configuration?.servos ?? const [];
-        _sensors = configuration?.sensors ?? const [];
+        _sensors = configurationService.sharedSensors;
         processes = configurationService.localSlaveProcesses;
       } else {
         final repository = GetIt.I<SystemRepository>();
@@ -209,18 +225,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       return;
     }
     _startupQueued = true;
-    final plans =
-        activePlans
-            .where(
-              (plan) =>
-                  plan.process.activationSensorId == null &&
-                  (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
-            )
-            .toList()
-          ..sort((a, b) {
-            final order = a.process.order.compareTo(b.process.order);
-            return order == 0 ? a.process.id.compareTo(b.process.id) : order;
-          });
+    final plans = activePlans
+        .where((plan) => plan.process.activationSensorId == null)
+        .toList();
     if (activePlans.any(
       (plan) =>
           plan.process.activationSensorId != null || plan.servos.isNotEmpty,
@@ -589,6 +596,16 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   }
 
   (String, bool)? _sensorSignal(String line) {
+    final normalizedLine = line.trim().toUpperCase();
+    final configuredSensors = [..._sensors]
+      ..sort((a, b) => b.key.trim().length.compareTo(a.key.trim().length));
+    for (final sensor in configuredSensors) {
+      final key = sensor.key.trim().toUpperCase();
+      if (key.isEmpty) continue;
+      if (normalizedLine == '${key}1') return (key, true);
+      if (normalizedLine == '${key}0') return (key, false);
+    }
+
     final parts = line.split(',');
     if (parts.length >= 4 && parts[0] == 'BC' && parts[1] == 'SENSOR') {
       return (parts[2].trim(), _isActive(parts[3]));
@@ -636,14 +653,13 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
         machines: _machines,
         allMachines: _allMachines,
         sensors: _sensors,
-        nextOrder: _plans.length,
       ),
     );
     if (draft == null) return;
     final process = Process(
       id: DateTime.now().microsecondsSinceEpoch,
       name: draft.name,
-      order: draft.sensor == null ? draft.order : 0,
+      order: 0,
       activationSensorId: draft.sensor?.id,
       machineId: draft.machine.id,
     );
@@ -661,7 +677,6 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   }
 
   Future<void> _openProcess(_SavedPlan plan) async {
-    final wasEmpty = plan.motors.isEmpty && plan.servos.isEmpty;
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (context) => _ProcessDetailPage(
@@ -671,26 +686,53 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
           motors: _motors,
           servos: _servos,
           sensors: _sensors,
+          onProcessChanged: (process) async {
+            await GetIt.I<SystemConfigurationService>().saveProcessDefinition(
+              process,
+            );
+            await _loadOptions();
+          },
           allowDelete: _peer.session.isMaster,
           onChanged: _loadOptions,
         ),
       ),
     );
-    if (!mounted ||
-        !_peer.session.isMaster ||
-        !wasEmpty ||
-        !_connection.state.isConnected ||
-        plan.process.activationSensorId != null ||
-        plan.process.order != 0) {
+  }
+
+  Future<void> _deleteProcess(_SavedPlan plan) async {
+    if (!_peer.session.isMaster ||
+        _runningProcesses.contains(plan.process.id)) {
       return;
     }
-    final saved = _plans.where((item) => item.process.id == plan.process.id);
-    if (saved.isEmpty ||
-        (saved.first.motors.isEmpty && saved.first.servos.isEmpty)) {
-      return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Eliminar proceso'),
+        content: Text(
+          '¿Quieres eliminar "${plan.process.name}"? Esta acción no se puede deshacer.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Eliminar'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await GetIt.I<SystemConfigurationService>().deleteProcess(
+        plan.process.id,
+      );
+      await _loadOptions();
+      if (mounted) _message('Proceso eliminado.');
+    } catch (error) {
+      if (mounted) _message('$error');
     }
-    if (saved.first.servos.isNotEmpty) _ensureProcessTelemetry();
-    _queuePlan(saved.first);
   }
 
   void _message(String text) =>
@@ -773,6 +815,16 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
                           )
                         : const Icon(Icons.play_arrow),
                   ),
+                  if (_peer.session.isMaster)
+                    IconButton(
+                      tooltip: _runningProcesses.contains(plan.process.id)
+                          ? 'No se puede eliminar mientras se ejecuta'
+                          : 'Eliminar proceso',
+                      onPressed: _runningProcesses.contains(plan.process.id)
+                          ? null
+                          : () => _deleteProcess(plan),
+                      icon: const Icon(Icons.delete_outline),
+                    ),
                   const Icon(Icons.chevron_right),
                 ],
               ),
@@ -895,13 +947,11 @@ class _ProcessDraft {
   const _ProcessDraft({
     required this.name,
     required this.machine,
-    required this.order,
     required this.sensor,
   });
 
   final String name;
   final SystemMachine machine;
-  final int order;
   final Sensor? sensor;
 }
 
@@ -916,13 +966,13 @@ class _ProcessCreateDialog extends StatefulWidget {
     required this.machines,
     required this.allMachines,
     required this.sensors,
-    required this.nextOrder,
+    this.initialProcess,
   });
 
   final List<SystemMachine> machines;
   final List<SystemMachine> allMachines;
   final List<Sensor> sensors;
-  final int nextOrder;
+  final Process? initialProcess;
 
   @override
   State<_ProcessCreateDialog> createState() => _ProcessCreateDialogState();
@@ -932,12 +982,20 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
   final _name = TextEditingController();
   SystemMachine? _machine;
   Sensor? _sensor;
-  int _order = 0;
 
   @override
   void initState() {
     super.initState();
-    _machine = widget.machines.firstOrNull;
+    final process = widget.initialProcess;
+    _name.text = process?.name ?? '';
+    _machine =
+        widget.machines
+            .where((machine) => machine.id == process?.machineId)
+            .firstOrNull ??
+        widget.machines.firstOrNull;
+    _sensor = widget.sensors
+        .where((sensor) => sensor.id == process?.activationSensorId)
+        .firstOrNull;
   }
 
   @override
@@ -946,29 +1004,27 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
     super.dispose();
   }
 
-  List<Sensor> get _machineSensors {
-    final machine = _machine;
-    if (machine == null) return const [];
-    final ids = {
-      machine.id,
-      ...widget.allMachines
-          .where((item) => item.parentMachineId == machine.id)
-          .map((item) => item.id),
-    };
-    return widget.sensors
-        .where((item) => item.machineId == null || ids.contains(item.machineId))
-        .toList();
+  bool get _editing => widget.initialProcess != null;
+
+  String _sensorMachineName(Sensor sensor) {
+    final machine = widget.allMachines
+        .where((item) => item.id == sensor.machineId)
+        .firstOrNull;
+    return machine?.name ??
+        (sensor.machineId == null
+            ? 'Sin máquina'
+            : 'Máquina ${sensor.machineId}');
   }
 
   void _submit() {
     final machine = _machine;
     final name = _name.text.trim();
+    final initial = widget.initialProcess;
     if (name.isEmpty || machine == null) return;
     Navigator.of(context).pop(
       _ProcessDraft(
         name: name,
-        machine: machine,
-        order: _order,
+        machine: initial == null ? machine : _machine!,
         sensor: _sensor,
       ),
     );
@@ -983,11 +1039,12 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
         builder: (context) => StatefulBuilder(
           builder: (context, setDialogState) {
             final query = search.text.trim().toLowerCase();
-            final sensors = _machineSensors
+            final sensors = widget.sensors
                 .where(
                   (sensor) =>
                       sensor.name.toLowerCase().contains(query) ||
-                      sensor.key.toLowerCase().contains(query),
+                      sensor.key.toLowerCase().contains(query) ||
+                      _sensorMachineName(sensor).toLowerCase().contains(query),
                 )
                 .toList();
             return AlertDialog(
@@ -1036,7 +1093,10 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                                 color: Colors.blue,
                               ),
                               title: Text(sensor.name),
-                              subtitle: Text('Clave: ${sensor.key}'),
+                              subtitle: Text(
+                                '${_sensorMachineName(sensor)} · Clave: ${sensor.key} · '
+                                'evento: ${sensor.key}1',
+                              ),
                               selected: _sensor?.id == sensor.id,
                               trailing: _sensor?.id == sensor.id
                                   ? const Icon(Icons.check)
@@ -1070,7 +1130,7 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Crear proceso'),
+    title: Text(_editing ? 'Editar proceso' : 'Crear proceso'),
     content: SizedBox(
       width: 440,
       child: SingleChildScrollView(
@@ -1102,15 +1162,19 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                     ),
                   )
                   .toList(),
-              onChanged: (value) => setState(() {
-                _machine = value;
-                _sensor = null;
-              }),
+              onChanged: _editing
+                  ? null
+                  : (value) => setState(() {
+                      _machine = value;
+                      _sensor = null;
+                    }),
             ),
             const SizedBox(height: 12),
             InputDecorator(
               decoration: const InputDecoration(
-                labelText: 'Condición de inicio (opcional)',
+                labelText: 'Inicio del proceso',
+                helperText:
+                    'Al conectar el serial o cuando el sensor envíe su clave + 1.',
                 border: OutlineInputBorder(),
                 suffixIcon: Icon(Icons.arrow_drop_down),
               ),
@@ -1127,7 +1191,7 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                       child: Text(
                         _sensor == null
                             ? 'Al conectar el serial'
-                            : '${_sensor!.name} · ${_sensor!.key}',
+                            : '${_sensor!.name} · ${_sensor!.key} · ${_sensorMachineName(_sensor!)}',
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -1135,22 +1199,6 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                 ),
               ),
             ),
-            if (_sensor == null) ...[
-              const SizedBox(height: 12),
-              DropdownButtonFormField<int>(
-                initialValue: _order,
-                decoration: const InputDecoration(
-                  labelText: 'Orden de inicio',
-                  helperText: 'Se ejecutará al conectar el serial.',
-                  border: OutlineInputBorder(),
-                ),
-                items: [
-                  for (var order = 0; order <= widget.nextOrder + 1; order++)
-                    DropdownMenuItem(value: order, child: Text('$order')),
-                ],
-                onChanged: (value) => setState(() => _order = value ?? 0),
-              ),
-            ],
           ],
         ),
       ),
@@ -1164,7 +1212,7 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
         onPressed: _name.text.trim().isNotEmpty && _machine != null
             ? _submit
             : null,
-        child: const Text('Crear'),
+        child: Text(_editing ? 'Guardar' : 'Crear'),
       ),
     ],
   );
@@ -1178,6 +1226,7 @@ class _ProcessDetailPage extends StatefulWidget {
     required this.motors,
     required this.servos,
     required this.sensors,
+    required this.onProcessChanged,
     required this.allowDelete,
     required this.onChanged,
   });
@@ -1188,6 +1237,7 @@ class _ProcessDetailPage extends StatefulWidget {
   final List<Motor> motors;
   final List<Servo> servos;
   final List<Sensor> sensors;
+  final Future<void> Function(Process process) onProcessChanged;
   final bool allowDelete;
   final Future<void> Function() onChanged;
 
@@ -1219,6 +1269,50 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
   List<Servo> get _machineServos => widget.servos
       .where((item) => _machineIds.contains(item.machineId))
       .toList();
+
+  Future<void> _editProcess() async {
+    if (_saving) return;
+    final draft = await showDialog<_ProcessDraft>(
+      context: context,
+      builder: (context) => _ProcessCreateDialog(
+        machines: widget.machines,
+        allMachines: widget.allMachines,
+        sensors: widget.sensors,
+        initialProcess: _plan.process,
+      ),
+    );
+    if (draft == null) return;
+    final updatedProcess = Process(
+      id: _plan.process.id,
+      name: draft.name,
+      order: _plan.process.order,
+      activationSensorId: draft.sensor?.id,
+      machineId: _plan.process.machineId,
+    );
+    setState(() => _saving = true);
+    try {
+      await widget.onProcessChanged(updatedProcess);
+      if (!mounted) return;
+      setState(() {
+        _plan = _SavedPlan(
+          process: updatedProcess,
+          motors: _plan.motors,
+          servos: _plan.servos,
+        );
+      });
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Proceso actualizado.')));
+    } catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('$error')));
+      }
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
 
   Future<void> _addMovement({
     ProcessMotors? editingMotor,
@@ -1417,7 +1511,16 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
         .where((item) => item.id == _plan.process.activationSensorId)
         .firstOrNull;
     return Scaffold(
-      appBar: AppBar(title: Text(_plan.process.name)),
+      appBar: AppBar(
+        title: Text(_plan.process.name),
+        actions: [
+          IconButton(
+            tooltip: 'Editar proceso',
+            onPressed: _saving ? null : _editProcess,
+            icon: const Icon(Icons.edit),
+          ),
+        ],
+      ),
       body: ListView(
         padding: const EdgeInsets.all(24),
         children: [
@@ -1427,7 +1530,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
               title: Text(machineName ?? 'Máquina no disponible'),
               subtitle: Text(
                 _plan.process.activationSensorId == null
-                    ? 'Se inicia al conectar · orden ${_plan.process.order}'
+                    ? 'Se inicia al conectar el serial'
                     : 'Se inicia al activar ${trigger?.name ?? 'sensor'}'
                           '${trigger == null ? '' : ' · ${trigger.key}'}',
               ),
