@@ -47,12 +47,13 @@ class DisconnectRequested extends ConnectionEvent {
 }
 
 class CommandSent extends ConnectionEvent {
-  const CommandSent(this.text);
+  const CommandSent(this.text, {this.sourceClientId});
 
   final String text;
+  final String? sourceClientId;
 
   @override
-  List<Object?> get props => [text];
+  List<Object?> get props => [text, sourceClientId];
 }
 
 /// Interno: el repositorio avisó que el puerto se cerró.
@@ -111,9 +112,13 @@ class SerialConnectionState extends Equatable {
 // ────────────────────────────── Bloc ──────────────────────────────
 
 class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
-  ConnectionBloc(this._repository, {void Function(String)? onCommandSent})
-    : _onCommandSentLog = onCommandSent,
-      super(const SerialConnectionState()) {
+  ConnectionBloc(
+    this._repository, {
+    void Function(String)? onCommandSent,
+    Future<void> Function(CommandSent)? onCommandShared,
+  }) : _onCommandSentLog = onCommandSent,
+       _onCommandShared = onCommandShared,
+       super(const SerialConnectionState()) {
     on<PortsRefreshed>(_onPortsRefreshed);
     on<PortSelected>(
       (event, emit) => emit(state.copyWith(selectedPort: event.name)),
@@ -140,6 +145,7 @@ class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
 
   final SerialRepository _repository;
   final void Function(String)? _onCommandSentLog;
+  final Future<void> Function(CommandSent)? _onCommandShared;
   late final StreamSubscription<bool> _linkSub;
   late final Timer _pollTimer;
 
@@ -204,10 +210,14 @@ class ConnectionBloc extends Bloc<ConnectionEvent, SerialConnectionState> {
     await _repository.disconnect();
   }
 
-  void _onCommandSent(CommandSent event, Emitter<SerialConnectionState> emit) {
+  Future<void> _onCommandSent(
+    CommandSent event,
+    Emitter<SerialConnectionState> emit,
+  ) async {
     if (!state.isConnected) return;
     _onCommandSentLog?.call(event.text);
     _repository.send(event.text);
+    await _onCommandShared?.call(event);
   }
 
   void _onLinkLost(LinkLost event, Emitter<SerialConnectionState> emit) {

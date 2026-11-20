@@ -1,5 +1,7 @@
 import 'package:get_it/get_it.dart';
 
+import '../../features/peer_to_peer/domain/entities/peer_entities.dart';
+import '../../features/peer_to_peer/domain/repositories/peer_repository.dart';
 import '../../features/peer_to_peer/peer_injection.dart';
 import '../../features/serial_connection/data/datasources/serial_datasource.dart';
 import '../../features/serial_connection/data/repositories/serial_repository_impl.dart';
@@ -26,6 +28,20 @@ Future<void> configureDependencies() async {
       () => ConnectionBloc(
         sl<SerialRepository>(),
         onCommandSent: sl<TelemetryCubit>().recordSent,
+        onCommandShared: (event) async {
+          final peer = sl<PeerRepository>();
+          if (!peer.session.isMaster) return;
+          for (final client in peer.session.clients) {
+            if (client.id == event.sourceClientId) continue;
+            await peer.sendToClient(
+              client.id,
+              PeerMessage(
+                type: PeerMessageType.telemetry,
+                payload: {'kind': 'serial_sent', 'line': event.text},
+              ),
+            );
+          }
+        },
       ),
     )
     ..registerLazySingleton<TelemetryCubit>(
@@ -43,6 +59,7 @@ Future<void> configureDependencies() async {
       serial: sl<SerialRepository>(),
       peer: sl(),
       telemetry: sl<TelemetryCubit>(),
+      connection: sl<ConnectionBloc>(),
     ),
   );
   sl<SerialPeerBridge>();

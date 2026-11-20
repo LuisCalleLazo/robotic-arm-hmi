@@ -232,6 +232,26 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     }
   }
 
+  void _startProcessManually(_SavedPlan plan) {
+    if (!_peer.session.isMaster) {
+      _message('Solo el maestro puede ejecutar procesos por serial.');
+      return;
+    }
+    if (!_connection.state.isConnected) {
+      _message('Conecta el serial antes de iniciar el proceso.');
+      return;
+    }
+    if (plan.motors.isEmpty && plan.servos.isEmpty) {
+      _message('Agrega movimientos antes de iniciar este proceso.');
+      return;
+    }
+    if (_runningProcesses.contains(plan.process.id)) {
+      return;
+    }
+    if (plan.servos.isNotEmpty) _ensureProcessTelemetry();
+    _queuePlan(plan);
+  }
+
   void _startArduinoReadyProbe() {
     if (_readyProbeTimer != null) return;
     _readyProbeAttempts = 0;
@@ -272,6 +292,11 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   void _queuePlan(_SavedPlan plan) {
     if (plan.motors.isEmpty && plan.servos.isEmpty) return;
     if (!_runningProcesses.add(plan.process.id)) return;
+    if (mounted) {
+      setState(
+        () => _executionMessage = 'Iniciando proceso "${plan.process.name}".',
+      );
+    }
     final generation = _executionGeneration;
     _executionQueue = _executionQueue
         .then((_) {
@@ -289,7 +314,10 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
             );
           }
         })
-        .whenComplete(() => _runningProcesses.remove(plan.process.id));
+        .whenComplete(() {
+          _runningProcesses.remove(plan.process.id);
+          if (mounted) setState(() {});
+        });
   }
 
   Future<void> _executePlan(_SavedPlan plan) async {
@@ -378,6 +406,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       );
     final finished = Completer<void>();
     _groupFinished = finished;
+    if (mounted) {
+      setState(() => _executionMessage = 'Enviando por serial: $line');
+    }
     _connection.add(CommandSent(line));
     final longest = actions
         .map((item) => item.speed == 0 ? 0.0 : item.value.abs() / item.speed)
@@ -416,9 +447,27 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
         line.startsWith('BC,EVT,FIN,')) {
       final parts = line.split(',');
       if (parts.length >= 4) {
-        _pendingAxes.remove(parts[3].trim().toUpperCase());
-        if (_pendingAxes.isEmpty && _groupFinished?.isCompleted == false) {
-          _groupFinished!.complete();
+        _completePendingAxis(parts[3]);
+      }
+    } else if (entry.source == TelemetrySource.serial &&
+        line.startsWith('BC,EVT,SENSOR,')) {
+      final parts = line.split(',');
+      if (parts.length >= 4) _completePendingAxis(parts[3]);
+    } else if (entry.source == TelemetrySource.serial &&
+        line.startsWith('BC,ERR,SENSOR_BLOQUEADO')) {
+      final parts = line.split(',');
+      final axis = parts.length >= 4
+          ? parts[3]
+          : parts.length == 3
+          ? parts[2].split(':').last
+          : '';
+      if (axis.trim().isNotEmpty) {
+        _completePendingAxis(axis);
+        if (mounted) {
+          setState(
+            () => _executionMessage =
+                'El motor ${axis.trim()} alcanzó su sensor; continúa el proceso.',
+          );
         }
       }
     } else if (entry.source == TelemetrySource.serial &&
@@ -480,6 +529,14 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
           _queuePlan(plan);
         }
       }
+    }
+  }
+
+  void _completePendingAxis(String axis) {
+    final normalized = _commandKey(axis).toUpperCase();
+    _pendingAxes.remove(normalized);
+    if (_pendingAxes.isEmpty && _groupFinished?.isCompleted == false) {
+      _groupFinished!.complete();
     }
   }
 
@@ -694,7 +751,31 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
             clipBehavior: Clip.antiAlias,
             child: ListTile(
               title: Text(plan.process.name),
-              trailing: const Icon(Icons.chevron_right),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: _runningProcesses.contains(plan.process.id)
+                        ? 'Proceso en ejecución'
+                        : 'Iniciar proceso',
+                    onPressed:
+                        !_peer.session.isMaster ||
+                            !_connection.state.isConnected ||
+                            (plan.motors.isEmpty && plan.servos.isEmpty) ||
+                            _runningProcesses.contains(plan.process.id)
+                        ? null
+                        : () => _startProcessManually(plan),
+                    icon: _runningProcesses.contains(plan.process.id)
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow),
+                  ),
+                  const Icon(Icons.chevron_right),
+                ],
+              ),
               onTap: () => _openProcess(plan),
             ),
           ),

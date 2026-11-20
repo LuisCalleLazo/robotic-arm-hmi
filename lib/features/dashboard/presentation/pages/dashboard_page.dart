@@ -2,7 +2,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:get_it/get_it.dart';
 
+import '../../../peer_to_peer/domain/entities/peer_entities.dart';
+import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
+import '../../../peer_to_peer/presentation/cubit/peer_cubit.dart';
 import '../../../peer_to_peer/presentation/widgets/peer_status_badge.dart';
 import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../serial_connection/presentation/pages/connection_page.dart';
@@ -27,11 +31,43 @@ class _DashboardPageState extends State<DashboardPage> {
     super.dispose();
   }
 
-  void _sendCommand() {
+  Future<void> _sendCommand() async {
     final command = _commandController.text.trim();
     if (command.isEmpty) return;
+    final peer = GetIt.I<PeerRepository>();
+    if (peer.session.isSlave) {
+      if (!peer.session.isActive) {
+        _showMessage('Conéctate al servidor maestro para enviar comandos.');
+        return;
+      }
+      if (!peer.session.permission.canSendCommands) {
+        _showMessage('El maestro no te ha dado permiso para enviar comandos.');
+        return;
+      }
+      try {
+        await peer.send(
+          PeerMessage(
+            type: PeerMessageType.command,
+            payload: {'kind': 'serial_command', 'line': command},
+          ),
+        );
+        if (!mounted) return;
+        context.read<TelemetryCubit>().recordSent(command);
+        _commandController.clear();
+      } catch (error) {
+        _showMessage('No se pudo enviar el comando: $error');
+      }
+      return;
+    }
+    if (!context.read<ConnectionBloc>().state.isConnected) return;
     context.read<ConnectionBloc>().add(CommandSent(command));
     _commandController.clear();
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
@@ -80,35 +116,44 @@ class _DashboardPageState extends State<DashboardPage> {
             padding: const EdgeInsets.all(24),
             child: Column(
               children: [
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            controller: _commandController,
-                            enabled: connection.isConnected,
-                            onSubmitted: (_) => _sendCommand(),
-                            decoration: const InputDecoration(
-                              labelText: 'Comando serial',
-                              hintText: 'Ej. BC?',
-                              border: OutlineInputBorder(),
-                              prefixIcon: Icon(Icons.terminal),
+                BlocBuilder<PeerCubit, PeerState>(
+                  bloc: GetIt.I<PeerCubit>(),
+                  builder: (context, peerState) {
+                    final session = peerState.session;
+                    final canSend = session.isSlave
+                        ? session.isActive && session.permission.canSendCommands
+                        : connection.isConnected;
+                    return Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _commandController,
+                                enabled: canSend,
+                                onSubmitted: (_) => _sendCommand(),
+                                decoration: InputDecoration(
+                                  labelText: session.isSlave
+                                      ? 'Comando serial al maestro'
+                                      : 'Comando serial',
+                                  hintText: 'Ej. BC?',
+                                  border: const OutlineInputBorder(),
+                                  prefixIcon: const Icon(Icons.terminal),
+                                ),
+                              ),
                             ),
-                          ),
+                            const SizedBox(width: 12),
+                            FilledButton.icon(
+                              onPressed: canSend ? _sendCommand : null,
+                              icon: const Icon(Icons.send),
+                              label: const Text('Enviar'),
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 12),
-                        FilledButton.icon(
-                          onPressed: connection.isConnected
-                              ? _sendCommand
-                              : null,
-                          icon: const Icon(Icons.send),
-                          label: const Text('Enviar'),
-                        ),
-                      ],
-                    ),
-                  ),
+                      ),
+                    );
+                  },
                 ),
                 const SizedBox(height: 12),
                 Expanded(

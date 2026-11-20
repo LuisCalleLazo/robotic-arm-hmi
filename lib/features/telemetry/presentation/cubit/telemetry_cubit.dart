@@ -165,11 +165,17 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   }
 
   void recordSent(String line) {
+    _recordConsoleLine(line, TelemetrySource.serialSent);
+  }
+
+  void ingestPeerSentLine(String line) {
+    _recordConsoleLine(line, TelemetrySource.serialSent);
+  }
+
+  void _recordConsoleLine(String line, TelemetrySource source) {
     final text = line.trim();
     if (text.isEmpty) return;
-    _console.add(
-      TelemetryLogEntry(line: text, source: TelemetrySource.serialSent),
-    );
+    _console.add(TelemetryLogEntry(line: text, source: source));
     _dirty = true;
     _flush();
   }
