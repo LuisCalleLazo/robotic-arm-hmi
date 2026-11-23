@@ -168,6 +168,7 @@ class _DashboardPageState extends State<DashboardPage> {
                           onCommand: _sendCommand,
                         ),
                         SystemOverviewPanel(
+                          key: ValueKey(_systemView),
                           canSendCommands: canSend,
                           serialConnected: serialConnected,
                           simulating: simulation,

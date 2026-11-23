@@ -93,6 +93,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   final RingBuffer<TelemetryLogEntry> _console;
   final _lineEvents = StreamController<TelemetryLogEntry>.broadcast();
   final List<String> _channels = [];
+  final Map<TelemetrySource, String> _lastConsoleLines = {};
   final Stopwatch _rateWatch = Stopwatch();
 
   late final StreamSubscription<String> _lineSub;
@@ -116,7 +117,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     final text = line.trim();
     if (text.isEmpty) return;
 
-    _console.add(TelemetryLogEntry(line: text, source: source));
+    _recordConsoleLineIfChanged(text, source);
     _lineEvents.add(TelemetryLogEntry(line: text, source: source));
     if (text.startsWith('STATE,')) {
       _machineState = text.substring('STATE,'.length);
@@ -175,10 +176,16 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   void _recordConsoleLine(String line, TelemetrySource source) {
     final text = line.trim();
     if (text.isEmpty) return;
-    _console.add(TelemetryLogEntry(line: text, source: source));
+    _recordConsoleLineIfChanged(text, source);
     _lineEvents.add(TelemetryLogEntry(line: text, source: source));
     _dirty = true;
     _flush();
+  }
+
+  void _recordConsoleLineIfChanged(String line, TelemetrySource source) {
+    if (_lastConsoleLines[source] == line) return;
+    _lastConsoleLines[source] = line;
+    _console.add(TelemetryLogEntry(line: line, source: source));
   }
 
   void ingestPeerLine(String line) {
@@ -223,6 +230,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     _history.clear();
     _console.clear();
     _channels.clear();
+    _lastConsoleLines.clear();
     _machineState = null;
     _gripperClosed = false;
     _routeStep = null;

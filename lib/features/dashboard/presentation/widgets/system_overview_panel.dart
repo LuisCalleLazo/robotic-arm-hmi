@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
 import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
+import '../../../peer_to_peer/domain/entities/peer_session.dart';
 import '../../../system/domain/entities/motor.dart';
 import '../../../system/domain/entities/sensor.dart';
 import '../../../system/domain/entities/servo.dart';
@@ -16,6 +17,8 @@ import '../../../system/domain/services/arduino_process_command_builder.dart';
 import '../../../system/domain/services/system_configuration_service.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import 'scara_process_panel.dart';
+import 'system_overview_machine_types.dart';
+import 'system_overview_machine_selection.dart';
 
 class SystemOverviewPanel extends StatefulWidget {
   const SystemOverviewPanel({
@@ -38,8 +41,8 @@ class SystemOverviewPanel extends StatefulWidget {
 }
 
 class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
-  static const _largeBeltType = 'CINTA GRANDE';
-  static const _smallBeltType = 'CINTA PEQUEÑA';
+  static const _largeBeltType = 'Cinta grande';
+  static const _smallBeltType = 'Cinta pequeña';
   static const _armType = 'BRAZO SCARA';
 
   List<SystemMachine> _machines = const [];
@@ -55,22 +58,25 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   final List<_OverviewSlot> _slots = [];
   int? _largeBeltId;
   int _nextPositionId = 1;
+  int _loadGeneration = 0;
   bool _loading = true;
   bool _saving = false;
+  bool _systemStopped = false;
   String? _error;
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
-  StreamSubscription<void>? _sensorCatalogSubscription;
+  StreamSubscription<void>? _machineCatalogSubscription;
+  StreamSubscription<PeerSession>? _peerSessionSubscription;
 
   @override
   void initState() {
     super.initState();
     _lineSubscription = widget.telemetry.lineEvents.listen(_onLine);
     final peer = GetIt.I<PeerRepository>();
-    _sensorCatalogSubscription = GetIt.I<SystemConfigurationService>()
-        .sensorCatalogChanges
-        .listen((_) {
-          if (peer.session.isSlave) _load();
-        });
+    final configuration = GetIt.I<SystemConfigurationService>();
+    _machineCatalogSubscription = configuration.machineCatalogChanges.listen(
+      (_) => _load(),
+    );
+    _peerSessionSubscription = peer.sessionStream.listen((_) => _load());
     _load();
     WidgetsBinding.instance.addPostFrameCallback((_) => _requestTelemetry());
   }
@@ -90,11 +96,13 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   @override
   void dispose() {
     _lineSubscription?.cancel();
-    _sensorCatalogSubscription?.cancel();
+    _machineCatalogSubscription?.cancel();
+    _peerSessionSubscription?.cancel();
     super.dispose();
   }
 
   Future<void> _load() async {
+    final generation = ++_loadGeneration;
     try {
       final peer = GetIt.I<PeerRepository>();
       final configuration = GetIt.I<SystemConfigurationService>();
@@ -118,7 +126,7 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
         positions = await GetIt.I<SystemPositionRepository>()
             .getSystemPositions();
       }
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _machines = machines;
         _motors = motors;
@@ -136,26 +144,37 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
           _largeBeltType,
           1,
         )?.systemMachineId;
-        final cellNumbers = <int>{
-          for (final item in positions)
-            if (_isSmallBelt(item.type) || _isArm(item.type)) item.number,
-        };
+        final lastSection = positions
+            .where(
+              (position) =>
+                  _isSmallBelt(position.type) || _isArm(position.type),
+            )
+            .fold<int>(1, (last, position) => math.max(last, position.number));
         _slots
           ..clear()
-          ..addAll(
-            (cellNumbers.toList()..sort()).map(
-              (number) => _OverviewSlot(
+          ..addAll([
+            for (var number = 1; number <= lastSection; number++)
+              _OverviewSlot(
                 number: number,
                 smallPosition: _findPosition(positions, _smallBeltType, number),
                 armPosition: _findPosition(positions, _armType, number),
+                smallMachineId: _findPosition(
+                  positions,
+                  _smallBeltType,
+                  number,
+                )?.systemMachineId,
+                armMachineId: _findPosition(
+                  positions,
+                  _armType,
+                  number,
+                )?.systemMachineId,
               ),
-            ),
-          );
+          ]);
         _loading = false;
         _error = null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _loading = false;
         _error = '$error';
@@ -186,15 +205,13 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
       .replaceAll('Í', 'I')
       .replaceAll('Ó', 'O')
       .replaceAll('Ú', 'U')
+      .replaceAll('Ñ', 'N')
       .replaceAll(RegExp(r'[^A-Z]'), '');
 
-  bool _isArm(String type) => _typeKey(type).contains('BRAZO');
+  bool _isArm(String type) => SystemOverviewMachineTypes.isArm(type);
 
   bool _isSmallBelt(String type) =>
-      _typeKey(type).contains('CINTA') && _typeKey(type).contains('PEQUENA');
-
-  bool _isLargeBelt(String type) =>
-      _typeKey(type).contains('CINTA') && _typeKey(type).contains('GRANDE');
+      SystemOverviewMachineTypes.isSmallBelt(type);
 
   Future<void> _requestTelemetry() async {
     if (!widget.canSendCommands ||
@@ -210,128 +227,19 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
     }
   }
 
-  List<SystemMachine> _machinesOf(bool Function(String) matches) =>
-      _machines.where((machine) => matches(machine.type)).toList()
-        ..sort((a, b) => a.name.compareTo(b.name));
-
-  List<SystemMachine> _availableMachines({
-    required bool Function(String) matches,
-    required int? selectedId,
-    required Set<int> usedIds,
-  }) => _machinesOf(matches)
-      .where(
-        (machine) => machine.id == selectedId || !usedIds.contains(machine.id),
-      )
-      .toList();
-
-  Set<int> _selectedSmallBeltIds({_OverviewSlot? excluding}) => {
-    for (final slot in _slots)
-      if (!identical(slot, excluding) && slot.smallMachineId != null)
-        slot.smallMachineId!,
-  };
-
-  Set<int> _selectedArmIds({_OverviewSlot? excluding}) => {
-    for (final slot in _slots)
-      if (!identical(slot, excluding) && slot.armMachineId != null)
-        slot.armMachineId!,
-  };
-
-  Future<void> _saveLargeBelt(int? machineId) async {
-    final oldPosition = _findPosition(_positions, _largeBeltType, 1);
-    if (machineId == oldPosition?.systemMachineId) return;
-    setState(() => _saving = true);
-    try {
-      final repository = GetIt.I<SystemPositionRepository>();
-      if (machineId == null) {
-        if (oldPosition != null) {
-          await repository.deleteSystemPosition(oldPosition.id);
-        }
-      } else {
-        await repository.saveSystemPosition(
-          SystemPosition(
-            id: oldPosition?.id ?? _nextPositionId++,
-            number: 1,
-            type: _largeBeltType,
-            systemMachineId: machineId,
-          ),
-        );
-      }
-      await GetIt.I<SystemConfigurationService>().publishSystemLayout();
-      await _load();
-    } catch (error) {
-      _notify('No se pudo guardar la cinta grande: $error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _saveSlot(_OverviewSlot slot) async {
-    setState(() => _saving = true);
-    try {
-      final repository = GetIt.I<SystemPositionRepository>();
-      await _saveSlotPosition(
-        repository,
-        slot,
-        type: _smallBeltType,
-        machineId: slot.smallMachineId,
-        oldPosition: slot.smallPosition,
-      );
-      await _saveSlotPosition(
-        repository,
-        slot,
-        type: _armType,
-        machineId: slot.armMachineId,
-        oldPosition: slot.armPosition,
-      );
-      await GetIt.I<SystemConfigurationService>().publishSystemLayout();
-      await _load();
-    } catch (error) {
-      _notify('No se pudo guardar la celda ${slot.number}: $error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _saveSlotPosition(
-    SystemPositionRepository repository,
-    _OverviewSlot slot, {
-    required String type,
-    required int? machineId,
-    required SystemPosition? oldPosition,
-  }) async {
-    if (machineId == null) {
-      if (oldPosition != null) {
-        await repository.deleteSystemPosition(oldPosition.id);
-      }
-      return;
-    }
-    if (machineId == oldPosition?.systemMachineId) return;
-    await repository.saveSystemPosition(
-      SystemPosition(
-        id: oldPosition?.id ?? _nextPositionId++,
-        number: slot.number,
-        type: type,
-        systemMachineId: machineId,
-      ),
+  List<SystemMachine> _availableMachines(int? selectedId) {
+    final assignedIds = {
+      ?_largeBeltId,
+      for (final slot in _slots) ...[
+        if (slot.smallMachineId != null) slot.smallMachineId!,
+        if (slot.armMachineId != null) slot.armMachineId!,
+      ],
+    };
+    return availableSystemOverviewMachines(
+      machines: _machines,
+      assignedMachineIds: assignedIds,
+      selectedMachineId: selectedId,
     );
-  }
-
-  Future<void> _deleteSlot(_OverviewSlot slot) async {
-    setState(() => _saving = true);
-    try {
-      final repository = GetIt.I<SystemPositionRepository>();
-      for (final position in [slot.smallPosition, slot.armPosition]) {
-        if (position != null) {
-          await repository.deleteSystemPosition(position.id);
-        }
-      }
-      await GetIt.I<SystemConfigurationService>().publishSystemLayout();
-      await _load();
-    } catch (error) {
-      _notify('No se pudo eliminar la celda ${slot.number}: $error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
   }
 
   void _addSlot() {
@@ -345,6 +253,97 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
     setState(() => _slots.add(_OverviewSlot(number: nextNumber)));
   }
 
+  Future<void> _selectLargeBelt() => _selectMachine(
+    title: 'Seleccionar cinta grande',
+    type: _largeBeltType,
+    number: 1,
+    selectedId: _largeBeltId,
+    oldPosition: _findPosition(_positions, _largeBeltType, 1),
+  );
+
+  Future<void> _selectSlotMachine(
+    _OverviewSlot slot, {
+    required bool smallBelt,
+  }) {
+    final type = smallBelt ? _smallBeltType : _armType;
+    return _selectMachine(
+      title: smallBelt ? 'Seleccionar cinta pequeña' : 'Seleccionar brazo',
+      type: type,
+      number: slot.number,
+      selectedId: smallBelt ? slot.smallMachineId : slot.armMachineId,
+      oldPosition: smallBelt ? slot.smallPosition : slot.armPosition,
+    );
+  }
+
+  Future<void> _selectMachine({
+    required String title,
+    required String type,
+    required int number,
+    required int? selectedId,
+    required SystemPosition? oldPosition,
+  }) async {
+    if (_saving) return;
+    final machines = _availableMachines(selectedId);
+    final selected = await showDialog<SystemMachine>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: 420,
+          height: 360,
+          child: machines.isEmpty
+              ? const Center(child: Text('No hay máquinas registradas.'))
+              : ListView(
+                  children: [
+                    for (final machine in machines)
+                      ListTile(
+                        leading: Icon(
+                          machine.id == selectedId
+                              ? Icons.radio_button_checked
+                              : Icons.precision_manufacturing_outlined,
+                        ),
+                        title: Text(machine.name),
+                        subtitle: Text(machine.type),
+                        selected: machine.id == selectedId,
+                        onTap: () => Navigator.pop(context, machine),
+                      ),
+                  ],
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+        ],
+      ),
+    );
+    if (selected == null || selected.id == selectedId) return;
+    if (GetIt.I<PeerRepository>().session.isSlave) {
+      _notify('La distribución del sistema solo puede editarse en el maestro.');
+      return;
+    }
+
+    setState(() => _saving = true);
+    try {
+      final repository = GetIt.I<SystemPositionRepository>();
+      await repository.saveSystemPosition(
+        SystemPosition(
+          id: oldPosition?.id ?? _nextPositionId++,
+          number: number,
+          type: type,
+          systemMachineId: selected.id,
+        ),
+      );
+      await GetIt.I<SystemConfigurationService>().publishSystemLayout();
+      await _load();
+    } catch (error) {
+      _notify('No se pudo asignar ${selected.name}: $error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
   void _notify(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
@@ -352,11 +351,32 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
     );
   }
 
+  Future<void> _stopAll() async {
+    try {
+      await widget.onCommand('BCSTOP');
+      if (mounted) setState(() => _systemStopped = true);
+    } catch (error) {
+      _notify('No se pudo detener el sistema: $error');
+    }
+  }
+
   void _onLine(TelemetryLogEntry entry) {
     final line = entry.line.trim();
     if (line.isEmpty) return;
     if (entry.source == TelemetrySource.serialSent) {
-      if (_updateSensors(line) && mounted) setState(() {});
+      final command = line.toUpperCase();
+      var stopped = _systemStopped;
+      if (command == 'BCSTOP' ||
+          command == 'STOP' ||
+          command == 'BCPAUSE' ||
+          command == 'PAUSE') {
+        stopped = true;
+      } else if (command != 'BCT100' && command != 'BC?' && command != 'POS') {
+        stopped = false;
+      }
+      if (stopped != _systemStopped && mounted) {
+        setState(() => _systemStopped = stopped);
+      }
       return;
     }
     var changed = _updateSensors(line);
@@ -369,6 +389,7 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
         if (position != null) _motorPositions[motor.id] = position;
         if (velocity != null && velocity != 0) {
           _motorDirections[motor.id] = velocity.sign.toInt();
+          _systemStopped = false;
         }
         if (velocity == 0) {
           _movingMotors.remove(motor.id);
@@ -413,6 +434,7 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
         }
       } else if (event == 'STOP' || event == 'SENSOR_BLOQUEADO') {
         _movingMotors.clear();
+        if (event == 'STOP') _systemStopped = true;
         changed = true;
       }
     } else if (fields.length >= 4 &&
@@ -436,48 +458,26 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   bool _updateSensors(String line) {
     final normalized = line.toUpperCase();
     var changed = false;
-    for (final sensor in _sensors) {
-      final key = sensor.key.trim().toUpperCase();
-      if (key.isEmpty) continue;
+    for (final key in _configuredSensorKeys) {
       if (normalized == '${key}1') {
         changed = _activeSensorKeys.add(key) || changed;
       } else if (normalized == '${key}0') {
         changed = _activeSensorKeys.remove(key) || changed;
       }
     }
-    final fields = line.split(',');
-    if (fields.length == 6 && fields.first.startsWith('BC')) {
-      final motor = _motorForKey(fields.first);
-      if (motor != null) {
-        final active = int.tryParse(fields[5]) == 1;
-        final direction = _motorDirections[motor.id] ?? 0;
-        final sensorKey = direction >= 0
-            ? motor.keySensorRight
-            : motor.keySensorLeft;
-        if (sensorKey != null) {
-          if (active) {
-            changed = _activeSensorKeys.add(sensorKey.toUpperCase()) || changed;
-          } else {
-            changed =
-                _activeSensorKeys.remove(sensorKey.toUpperCase()) || changed;
-          }
-        }
-      }
-    } else if (fields.length >= 5 &&
-        fields[0] == 'BC' &&
-        fields[1] == 'EVT' &&
-        fields[2] == 'SENSOR') {
-      final motor = _motorForKey(fields[3]);
-      if (motor != null) {
-        final direction = _motorDirections[motor.id] ?? 0;
-        final key = direction >= 0 ? motor.keySensorRight : motor.keySensorLeft;
-        if (key != null) {
-          changed = _activeSensorKeys.add(key.toUpperCase()) || changed;
-        }
-      }
-    }
     return changed;
   }
+
+  Set<String> get _configuredSensorKeys => {
+    for (final sensor in _sensors)
+      if (sensor.key.trim().isNotEmpty) sensor.key.trim().toUpperCase(),
+    for (final motor in _motors)
+      if (motor.keySensorLeft?.trim().isNotEmpty == true)
+        motor.keySensorLeft!.trim().toUpperCase(),
+    for (final motor in _motors)
+      if (motor.keySensorRight?.trim().isNotEmpty == true)
+        motor.keySensorRight!.trim().toUpperCase(),
+  };
 
   Motor? _motorForKey(String key) {
     final normalized = ArduinoProcessCommandBuilder.commandKey(
@@ -496,6 +496,10 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
 
   List<int> _machineAndComponentIds(int machineId) => {
     machineId,
+    ..._machines
+        .where((machine) => machine.id == machineId)
+        .map((machine) => machine.parentMachineId)
+        .whereType<int>(),
     ..._machines
         .where((machine) => machine.parentMachineId == machineId)
         .map((machine) => machine.id),
@@ -546,19 +550,32 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
     return ((_servoAngles[servo.id] ?? 90) / maximum).clamp(0, 1).toDouble();
   }
 
-  Sensor? _firstSensor(int machineId) {
+  Set<String> _sensorKeysForMachine(int machineId) {
     final machineIds = _machineAndComponentIds(machineId).toSet();
-    final localSensors =
-        _sensors
-            .where(
-              (sensor) =>
-                  sensor.machineId != null &&
-                  machineIds.contains(sensor.machineId),
-            )
-            .toList()
-          ..sort((a, b) => a.id.compareTo(b.id));
-    if (localSensors.isNotEmpty) return localSensors.first;
-    return _sensors.where((sensor) => sensor.machineId == null).firstOrNull;
+    return {
+      for (final sensor in _sensors)
+        if (sensor.machineId != null &&
+            machineIds.contains(sensor.machineId) &&
+            sensor.key.trim().isNotEmpty)
+          sensor.key.trim().toUpperCase(),
+      for (final motor in _motors)
+        if (machineIds.contains(motor.systemMachineId) &&
+            motor.keySensorLeft?.trim().isNotEmpty == true)
+          motor.keySensorLeft!.trim().toUpperCase(),
+      for (final motor in _motors)
+        if (machineIds.contains(motor.systemMachineId) &&
+            motor.keySensorRight?.trim().isNotEmpty == true)
+          motor.keySensorRight!.trim().toUpperCase(),
+    };
+  }
+
+  bool _sensorActiveForMachine(int machineId) =>
+      _sensorKeysForMachine(machineId).any(_activeSensorKeys.contains);
+
+  String? _sensorKeyForMachine(int machineId) {
+    final keys = _sensorKeysForMachine(machineId);
+    return keys.where(_activeSensorKeys.contains).firstOrNull ??
+        keys.firstOrNull;
   }
 
   @override
@@ -569,271 +586,123 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
     }
     return Column(
       children: [
-        _configurationPanel(),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              const Text(
+                'Sistema general',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                alignment: WrapAlignment.center,
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  FilledButton.tonalIcon(
+                    onPressed: widget.canSendCommands ? _stopAll : null,
+                    icon: const Icon(Icons.stop),
+                    label: const Text('Parar todo'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed:
+                        _saving || GetIt.I<PeerRepository>().session.isSlave
+                        ? null
+                        : _addSlot,
+                    icon: const Icon(Icons.add),
+                    label: const Text('Agregar sección'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
         Expanded(child: _systemBoard()),
       ],
     );
   }
 
-  Widget _configurationPanel() {
-    final largeBelts = _machinesOf(_isLargeBelt);
-    final colors = Theme.of(context).colorScheme;
-    final isSlave = GetIt.I<PeerRepository>().session.isSlave;
-    return Card(
-      margin: const EdgeInsets.fromLTRB(16, 10, 16, 4),
-      child: ExpansionTile(
-        initiallyExpanded: _positions.isEmpty,
-        leading: Icon(Icons.tune, color: colors.primary),
-        title: const Text('Distribución de máquinas'),
-        subtitle: Text(
-          'Una cinta grande · ${_slots.length} celdas de cinta pequeña y brazo',
-        ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-        children: [
-          if (isSlave)
-            const Padding(
-              padding: EdgeInsets.only(bottom: 8),
-              child: Text(
-                'La distribución se configura en el maestro.',
-                textAlign: TextAlign.left,
-              ),
-            ),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final field = DropdownButtonFormField<int?>(
-                initialValue: _largeBeltId,
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: 'Seleccionar máquina',
-                ),
-                items: [
-                  const DropdownMenuItem<int?>(
-                    value: null,
-                    child: Text('Sin asignar'),
-                  ),
-                  ...largeBelts.map(
-                    (machine) => DropdownMenuItem<int?>(
-                      value: machine.id,
-                      child: Text(machine.name),
-                    ),
-                  ),
-                ],
-                onChanged: _saving || isSlave
-                    ? null
-                    : (id) => _saveLargeBelt(id),
-              );
-              if (constraints.maxWidth < 520) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const Text(
-                      'Cinta grande',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    field,
-                  ],
-                );
-              }
-              return Row(
-                children: [
-                  const Expanded(
-                    child: Text(
-                      'Cinta grande',
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                  SizedBox(width: 250, child: field),
-                ],
-              );
-            },
-          ),
-          const Divider(height: 24),
-          for (final slot in _slots) _slotConfiguration(slot, isSlave),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: OutlinedButton.icon(
-              onPressed: _saving || isSlave ? null : _addSlot,
-              icon: const Icon(Icons.add),
-              label: const Text('Agregar cinta pequeña y brazo'),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _slotConfiguration(_OverviewSlot slot, bool isSlave) {
-    final smallMachines = _availableMachines(
-      matches: _isSmallBelt,
-      selectedId: slot.smallMachineId,
-      usedIds: _selectedSmallBeltIds(excluding: slot),
-    );
-    final arms = _availableMachines(
-      matches: _isArm,
-      selectedId: slot.armMachineId,
-      usedIds: _selectedArmIds(excluding: slot),
-    );
-    final smallBeltField = DropdownButtonFormField<int?>(
-      initialValue: slot.smallMachineId,
-      decoration: const InputDecoration(
-        isDense: true,
-        labelText: 'Cinta pequeña',
-      ),
-      items: [
-        const DropdownMenuItem<int?>(value: null, child: Text('Sin asignar')),
-        ...smallMachines.map(
-          (machine) => DropdownMenuItem<int?>(
-            value: machine.id,
-            child: Text(machine.name),
-          ),
-        ),
-      ],
-      onChanged: _saving || isSlave
-          ? null
-          : (id) => setState(() => slot.smallMachineId = id),
-    );
-    final armField = DropdownButtonFormField<int?>(
-      initialValue: slot.armMachineId,
-      decoration: const InputDecoration(
-        isDense: true,
-        labelText: 'Brazo SCARA',
-      ),
-      items: [
-        const DropdownMenuItem<int?>(value: null, child: Text('Sin asignar')),
-        ...arms.map(
-          (machine) => DropdownMenuItem<int?>(
-            value: machine.id,
-            child: Text(machine.name),
-          ),
-        ),
-      ],
-      onChanged: _saving || isSlave
-          ? null
-          : (id) => setState(() => slot.armMachineId = id),
-    );
-    final actions = Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IconButton(
-          tooltip: 'Guardar celda',
-          onPressed: _saving || isSlave ? null : () => _saveSlot(slot),
-          icon: const Icon(Icons.save_outlined),
-        ),
-        IconButton(
-          tooltip: 'Eliminar celda',
-          onPressed: _saving || isSlave ? null : () => _deleteSlot(slot),
-          icon: const Icon(Icons.delete_outline),
-        ),
-      ],
-    );
+  Widget _systemBoard() {
+    final largeMachine = _machineById(_largeBeltId);
+    final largeSensorKey = largeMachine == null
+        ? null
+        : _sensorKeyForMachine(largeMachine.id);
+    final largeSensorActive =
+        largeMachine != null && _sensorActiveForMachine(largeMachine.id);
+    final boardHeight = math.max(190.0, _slots.length * 190.0).toDouble();
     return LayoutBuilder(
-      builder: (context, constraints) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: constraints.maxWidth < 640
-            ? Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (context, constraints) {
+        final availableWidth = math.max(710.0, constraints.maxWidth - 32);
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minWidth: availableWidth),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Celda ${slot.number}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
+                  Column(
+                    children: [for (final slot in _slots) _workCell(slot)],
+                  ),
+                  const SizedBox(width: 20),
+                  SizedBox(
+                    width: 140,
+                    height: boardHeight + 36,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: _selectLargeBelt,
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Column(
+                            children: [
+                              Text(
+                                largeMachine?.name ?? 'Cinta grande · asignar',
+                                style: Theme.of(context).textTheme.titleSmall,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              const SizedBox(height: 8),
+                              Expanded(
+                                child: _ConveyorVisual(
+                                  vertical: true,
+                                  machineName:
+                                      largeMachine?.name ??
+                                      'Toca para seleccionar',
+                                  sensorKey: largeSensorKey,
+                                  isMoving:
+                                      !_systemStopped && !largeSensorActive,
+                                  sensorActive: largeSensorActive,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
-                      actions,
-                    ],
-                  ),
-                  smallBeltField,
-                  const SizedBox(height: 6),
-                  armField,
-                ],
-              )
-            : Row(
-                children: [
-                  SizedBox(
-                    width: 64,
-                    child: Text(
-                      'Celda ${slot.number}',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                   ),
-                  Expanded(child: smallBeltField),
-                  const SizedBox(width: 8),
-                  Expanded(child: armField),
-                  actions,
                 ],
               ),
-      ),
-    );
-  }
-
-  Widget _systemBoard() {
-    final largeMachine = _machines
-        .where((machine) => machine.id == _largeBeltId)
-        .firstOrNull;
-    final largeSensor = largeMachine == null
-        ? null
-        : _firstSensor(largeMachine.id);
-    if (_slots.every(
-          (slot) => slot.smallMachineId == null && slot.armMachineId == null,
-        ) &&
-        largeMachine == null) {
-      return const Center(
-        child: Text('Asigna las cintas y los brazos para ver la distribución.'),
-      );
-    }
-    final boardHeight = math.max(190.0, _slots.length * 190.0).toDouble();
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Column(children: [for (final slot in _slots) _workCell(slot)]),
-            const SizedBox(width: 20),
-            Column(
-              children: [
-                Text(
-                  largeMachine?.name ?? 'Cinta grande sin asignar',
-                  style: Theme.of(context).textTheme.titleSmall,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                const SizedBox(height: 8),
-                SizedBox(
-                  width: 112,
-                  height: boardHeight,
-                  child: _ConveyorVisual(
-                    vertical: true,
-                    machineName: largeMachine?.name ?? 'Sin asignar',
-                    sensor: largeSensor,
-                    sensorActive:
-                        largeSensor != null &&
-                        _activeSensorKeys.contains(
-                          largeSensor.key.toUpperCase(),
-                        ),
-                  ),
-                ),
-              ],
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 
   Widget _workCell(_OverviewSlot slot) {
-    final smallMachine = _machines
-        .where((machine) => machine.id == slot.smallMachineId)
-        .firstOrNull;
-    final armMachine = _machines
-        .where((machine) => machine.id == slot.armMachineId)
-        .firstOrNull;
-    final smallSensor = smallMachine == null
+    final smallMachine = _machineById(slot.smallMachineId);
+    final armMachine = _machineById(slot.armMachineId);
+    final smallSensorKey = smallMachine == null
         ? null
-        : _firstSensor(smallMachine.id);
+        : _sensorKeyForMachine(smallMachine.id);
+    final smallSensorActive =
+        smallMachine != null && _sensorActiveForMachine(smallMachine.id);
     return Container(
       width: 550,
       height: 190,
@@ -842,71 +711,97 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
         children: [
           Expanded(
             flex: 5,
-            child: Column(
-              children: [
-                Text(
-                  smallMachine?.name ?? 'Cinta pequeña sin asignar',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 8),
-                Expanded(
-                  child: _ConveyorVisual(
-                    vertical: false,
-                    machineName: smallMachine?.name ?? 'Sin asignar',
-                    sensor: smallSensor,
-                    sensorActive:
-                        smallSensor != null &&
-                        _activeSensorKeys.contains(
-                          smallSensor.key.toUpperCase(),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => _selectSlotMachine(slot, smallBelt: true),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Column(
+                    children: [
+                      Text(
+                        smallMachine?.name ?? 'Cinta pequeña · asignar',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: _ConveyorVisual(
+                          vertical: false,
+                          machineName:
+                              smallMachine?.name ?? 'Toca para seleccionar',
+                          sensorKey: smallSensorKey,
+                          isMoving: !_systemStopped && !smallSensorActive,
+                          sensorActive: smallSensorActive,
                         ),
+                      ),
+                    ],
                   ),
                 ),
-              ],
+              ),
             ),
           ),
           const SizedBox(width: 10),
           SizedBox(
             width: 205,
-            child: Column(
-              children: [
-                Text(
-                  armMachine?.name ?? 'Brazo sin asignar',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const SizedBox(height: 4),
-                Expanded(
-                  child: armMachine == null
-                      ? const Center(
-                          child: Icon(Icons.precision_manufacturing_outlined),
-                        )
-                      : ScaraArmCanvas(
-                          x: _normalizedMotorPosition(
-                            _axisMotor(armMachine.id, 'X'),
-                            'X',
-                          ),
-                          y: _normalizedMotorPosition(
-                            _axisMotor(armMachine.id, 'Y'),
-                            'Y',
-                          ),
-                          z: _normalizedMotorPosition(
-                            _axisMotor(armMachine.id, 'Z'),
-                            'Z',
-                          ),
-                          a: _normalizedMotorPosition(
-                            _axisMotor(armMachine.id, 'A'),
-                            'A',
-                          ),
-                          gripperOpen: _normalizedGripper(armMachine.id),
-                          machineState: _armMoving(armMachine.id)
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: () => _selectSlotMachine(slot, smallBelt: false),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: Column(
+                    children: [
+                      Text(
+                        armMachine?.name ?? 'Brazo · asignar',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                      const SizedBox(height: 4),
+                      Expanded(
+                        child: ScaraArmCanvas(
+                          x: armMachine == null
+                              ? 0.5
+                              : _normalizedMotorPosition(
+                                  _axisMotor(armMachine.id, 'X'),
+                                  'X',
+                                ),
+                          y: armMachine == null
+                              ? 0.5
+                              : _normalizedMotorPosition(
+                                  _axisMotor(armMachine.id, 'Y'),
+                                  'Y',
+                                ),
+                          z: armMachine == null
+                              ? 0.5
+                              : _normalizedMotorPosition(
+                                  _axisMotor(armMachine.id, 'Z'),
+                                  'Z',
+                                ),
+                          a: armMachine == null
+                              ? 0.5
+                              : _normalizedMotorPosition(
+                                  _axisMotor(armMachine.id, 'A'),
+                                  'A',
+                                ),
+                          gripperOpen: armMachine == null
+                              ? 0.5
+                              : _normalizedGripper(armMachine.id),
+                          machineState: armMachine == null
+                              ? 'Selecciona un brazo'
+                              : _armMoving(armMachine.id)
                               ? 'En movimiento'
                               : 'Listo',
                         ),
+                      ),
+                    ],
+                  ),
                 ),
-              ],
+              ),
             ),
           ),
         ],
@@ -915,6 +810,13 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   }
 
   bool _armMoving(int machineId) {
+    return _machineMoving(machineId);
+  }
+
+  SystemMachine? _machineById(int? machineId) =>
+      _machines.where((machine) => machine.id == machineId).firstOrNull;
+
+  bool _machineMoving(int machineId) {
     final machineIds = _machineAndComponentIds(machineId).toSet();
     return _motors.any(
       (motor) =>
@@ -925,9 +827,13 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
 }
 
 class _OverviewSlot {
-  _OverviewSlot({required this.number, this.smallPosition, this.armPosition})
-    : smallMachineId = smallPosition?.systemMachineId,
-      armMachineId = armPosition?.systemMachineId;
+  _OverviewSlot({
+    required this.number,
+    this.smallPosition,
+    this.armPosition,
+    this.smallMachineId,
+    this.armMachineId,
+  });
 
   final int number;
   final SystemPosition? smallPosition;
@@ -936,38 +842,80 @@ class _OverviewSlot {
   int? armMachineId;
 }
 
-class _ConveyorVisual extends StatelessWidget {
+class _ConveyorVisual extends StatefulWidget {
   const _ConveyorVisual({
     required this.vertical,
     required this.machineName,
-    required this.sensor,
+    required this.sensorKey,
+    required this.isMoving,
     required this.sensorActive,
   });
 
   final bool vertical;
   final String machineName;
-  final Sensor? sensor;
+  final String? sensorKey;
+  final bool isMoving;
   final bool sensorActive;
 
   @override
+  State<_ConveyorVisual> createState() => _ConveyorVisualState();
+}
+
+class _ConveyorVisualState extends State<_ConveyorVisual>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _rollerAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _rollerAnimation = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    if (widget.isMoving) _rollerAnimation.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ConveyorVisual oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isMoving == widget.isMoving) return;
+    if (widget.isMoving) {
+      _rollerAnimation.repeat();
+    } else {
+      _rollerAnimation.stop();
+      _rollerAnimation.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _rollerAnimation.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final currentSensor = sensor;
+    final currentSensorKey = widget.sensorKey;
     return CustomPaint(
       painter: _ConveyorPainter(
-        vertical: vertical,
+        vertical: widget.vertical,
         color: Theme.of(context).colorScheme,
-        sensorActive: sensorActive,
+        sensorActive: widget.sensorActive,
+        isMoving: widget.isMoving,
+        animation: _rollerAnimation,
       ),
       child: Stack(
         children: [
           Align(
-            alignment: vertical ? Alignment.center : Alignment.centerLeft,
+            alignment: widget.vertical
+                ? Alignment.center
+                : Alignment.centerLeft,
             child: Padding(
               padding: const EdgeInsets.all(8),
               child: RotatedBox(
-                quarterTurns: vertical ? 3 : 0,
+                quarterTurns: widget.vertical ? 3 : 0,
                 child: Text(
-                  machineName,
+                  widget.machineName,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -982,13 +930,13 @@ class _ConveyorVisual extends StatelessWidget {
             ),
           ),
           Align(
-            alignment: vertical ? Alignment.centerLeft : Alignment.centerRight,
+            alignment: widget.vertical
+                ? Alignment.centerLeft
+                : Alignment.centerRight,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 6),
               child: Tooltip(
-                message: currentSensor == null
-                    ? 'Sin sensor configurado'
-                    : '${currentSensor.name} · ${currentSensor.key}',
+                message: currentSensorKey ?? 'Sin sensor configurado',
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -997,12 +945,12 @@ class _ConveyorVisual extends StatelessWidget {
                       height: 12,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: currentSensor == null
+                        color: currentSensorKey == null
                             ? Colors.grey
-                            : sensorActive
+                            : widget.sensorActive
                             ? Colors.greenAccent
                             : Colors.redAccent,
-                        boxShadow: sensorActive
+                        boxShadow: widget.sensorActive
                             ? [
                                 BoxShadow(
                                   color: Colors.greenAccent.withValues(
@@ -1015,12 +963,12 @@ class _ConveyorVisual extends StatelessWidget {
                             : null,
                       ),
                     ),
-                    if (currentSensor != null) ...[
+                    if (currentSensorKey != null) ...[
                       const SizedBox(width: 4),
                       RotatedBox(
-                        quarterTurns: vertical ? 3 : 0,
+                        quarterTurns: widget.vertical ? 3 : 0,
                         child: Text(
-                          currentSensor.key,
+                          currentSensorKey,
                           style: Theme.of(context).textTheme.labelSmall
                               ?.copyWith(
                                 color: Theme.of(context).colorScheme.onSurface,
@@ -1047,11 +995,16 @@ class _ConveyorPainter extends CustomPainter {
     required this.vertical,
     required this.color,
     required this.sensorActive,
-  });
+    required this.isMoving,
+    required Animation<double> animation,
+  }) : _animation = animation,
+       super(repaint: animation);
 
   final bool vertical;
   final ColorScheme color;
   final bool sensorActive;
+  final bool isMoving;
+  final Animation<double> _animation;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1070,12 +1023,15 @@ class _ConveyorPainter extends CustomPainter {
     final rollerPaint = Paint()
       ..color = color.outlineVariant
       ..strokeWidth = 2;
+    final offset = isMoving ? (1 - _animation.value) * 24 : 0.0;
     if (vertical) {
-      for (var y = 18.0; y < size.height - 10; y += 24) {
+      for (var y = 18.0 - offset; y < size.height - 10; y += 24) {
+        if (y < 6) continue;
         canvas.drawLine(Offset(14, y), Offset(size.width - 14, y), rollerPaint);
       }
     } else {
-      for (var x = 18.0; x < size.width - 10; x += 24) {
+      for (var x = 18.0 - offset; x < size.width - 10; x += 24) {
+        if (x < 6) continue;
         canvas.drawLine(
           Offset(x, 14),
           Offset(x, size.height - 14),
@@ -1100,5 +1056,7 @@ class _ConveyorPainter extends CustomPainter {
   bool shouldRepaint(covariant _ConveyorPainter oldDelegate) =>
       vertical != oldDelegate.vertical ||
       color != oldDelegate.color ||
-      sensorActive != oldDelegate.sensorActive;
+      sensorActive != oldDelegate.sensorActive ||
+      isMoving != oldDelegate.isMoving ||
+      _animation.value != oldDelegate._animation.value;
 }

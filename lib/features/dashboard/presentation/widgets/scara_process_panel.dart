@@ -6,7 +6,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 
-class ScaraArmCanvas extends StatelessWidget {
+class ScaraArmCanvas extends StatefulWidget {
   const ScaraArmCanvas({
     required this.x,
     required this.y,
@@ -25,33 +25,106 @@ class ScaraArmCanvas extends StatelessWidget {
   final String machineState;
 
   @override
+  State<ScaraArmCanvas> createState() => _ScaraArmCanvasState();
+}
+
+class _ScaraArmCanvasState extends State<ScaraArmCanvas>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+  late List<double> _from;
+
+  List<double> get _target => [
+    widget.x,
+    widget.y,
+    widget.z,
+    widget.a,
+    widget.gripperOpen,
+  ];
+
+  List<double> get _current {
+    final progress = Curves.easeInOutCubic.transform(_controller.value);
+    final target = _target;
+    return List.generate(
+      target.length,
+      (index) => _from[index] + (target[index] - _from[index]) * progress,
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _from = _target;
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+    )..value = 1;
+  }
+
+  @override
+  void didUpdateWidget(covariant ScaraArmCanvas oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final changed =
+        oldWidget.x != widget.x ||
+        oldWidget.y != widget.y ||
+        oldWidget.z != widget.z ||
+        oldWidget.a != widget.a ||
+        oldWidget.gripperOpen != widget.gripperOpen;
+    if (!changed) return;
+    final progress = Curves.easeInOutCubic.transform(_controller.value);
+    final previous = [
+      oldWidget.x,
+      oldWidget.y,
+      oldWidget.z,
+      oldWidget.a,
+      oldWidget.gripperOpen,
+    ];
+    _from = List.generate(
+      previous.length,
+      (index) => _from[index] + (previous[index] - _from[index]) * progress,
+    );
+    _controller.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return CustomPaint(
-      painter: _ScaraProcessPainter(
-        x: x * _ScaraProcessPainter._maxX,
-        y: y * _ScaraProcessPainter._maxY,
-        a: a * _ScaraProcessPainter._maxA,
-        z: z * _ScaraProcessPainter._maxZ,
-        gripperClosed: gripperOpen <= 0.02,
-        gripperOpening: gripperOpen,
-        machineState: machineState,
-        armCount: 1,
-        sensorEnabled: false,
-        sensorDetected: false,
-        objectOnBelt: false,
-        objectPicked: false,
-        objectDelivered: false,
-        objectProgress: 0,
-        accent: colors.primary,
-        textColor: colors.onSurface,
-        mutedColor: colors.onSurfaceVariant,
-        surfaceColor: colors.surfaceContainerHighest,
-        gridColor: colors.outlineVariant,
-        showBelt: false,
-        showReadout: false,
-      ),
-      child: const SizedBox.expand(),
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        final values = _current;
+        return CustomPaint(
+          painter: _ScaraProcessPainter(
+            x: values[0] * _ScaraProcessPainter._maxX,
+            y: values[1] * _ScaraProcessPainter._maxY,
+            a: values[3] * _ScaraProcessPainter._maxA,
+            z: values[2] * _ScaraProcessPainter._maxZ,
+            gripperClosed: values[4] <= 0.02,
+            gripperOpening: values[4],
+            machineState: widget.machineState,
+            armCount: 1,
+            sensorEnabled: false,
+            sensorDetected: false,
+            objectOnBelt: false,
+            objectPicked: false,
+            objectDelivered: false,
+            objectProgress: 0,
+            accent: colors.primary,
+            textColor: colors.onSurface,
+            mutedColor: colors.onSurfaceVariant,
+            surfaceColor: colors.surfaceContainerHighest,
+            gridColor: colors.outlineVariant,
+            showBelt: false,
+            showReadout: false,
+          ),
+          child: const SizedBox.expand(),
+        );
+      },
     );
   }
 }

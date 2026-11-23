@@ -24,4 +24,25 @@ void main() {
     );
     await cubit.close();
   });
+
+  test('keeps only changed consecutive lines in the visible console', () async {
+    final cubit = TelemetryCubit(
+      repository: _FakeSerialRepository(),
+      parser: TelemetryParser(),
+    );
+
+    for (var index = 0; index < 200; index++) {
+      cubit.ingestPeerLine('CPS1');
+    }
+    cubit.ingestPeerLine('CPS0');
+    cubit.ingestPeerLine('CPS1');
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+
+    expect(cubit.state.consoleEntries.map((entry) => entry.line).toList(), [
+      'CPS1',
+      'CPS0',
+      'CPS1',
+    ]);
+    await cubit.close();
+  });
 }

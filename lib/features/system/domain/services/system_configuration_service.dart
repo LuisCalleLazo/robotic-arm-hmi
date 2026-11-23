@@ -35,6 +35,7 @@ class SystemConfigurationService {
   final Map<int, List<ProcessMotors>> _localSlaveProcessMotors = {};
   final Map<int, List<ProcessServo>> _localSlaveProcessServos = {};
   final _sensorCatalogChanges = StreamController<void>.broadcast();
+  final _machineCatalogChanges = StreamController<void>.broadcast();
   final _processChanges = StreamController<void>.broadcast();
   List<Sensor> _sharedSensors = const [];
   List<SystemMachine> _sharedMachines = const [];
@@ -95,6 +96,7 @@ class SystemConfigurationService {
       List.unmodifiable(_sharedPositions);
 
   Stream<void> get sensorCatalogChanges => _sensorCatalogChanges.stream;
+  Stream<void> get machineCatalogChanges => _machineCatalogChanges.stream;
   Stream<void> get processChanges => _processChanges.stream;
   List<Process> get localSlaveProcesses =>
       List.unmodifiable(_localSlaveProcesses.values);
@@ -148,10 +150,12 @@ class SystemConfigurationService {
       );
       _machineByClient['local'] = configuration.machine.id;
       _configurationByClient['local'] = configuration;
+      _machineCatalogChanges.add(null);
       return;
     }
     _ensureMaster();
     await _saveLocal(configuration);
+    _machineCatalogChanges.add(null);
     await _publishSensorCatalog();
   }
 
@@ -319,6 +323,7 @@ class SystemConfigurationService {
           )
           .toList();
       _sensorCatalogChanges.add(null);
+      _machineCatalogChanges.add(null);
       return;
     }
     if (_peer.session.isMaster &&
@@ -373,6 +378,7 @@ class SystemConfigurationService {
       return;
     }
     await _saveLocal(configuration);
+    _machineCatalogChanges.add(null);
     await _publishSensorCatalog();
     _machineByClient[clientId] = configuration.machine.id;
     _configurationByClient[clientId] = configuration;
@@ -870,6 +876,7 @@ class SystemConfigurationService {
     await _messageSub.cancel();
     await _sessionSub.cancel();
     await _sensorCatalogChanges.close();
+    await _machineCatalogChanges.close();
     await _processChanges.close();
   }
 

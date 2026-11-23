@@ -4,6 +4,7 @@ import '../../peer_to_peer/domain/entities/peer_entities.dart';
 import '../../peer_to_peer/domain/repositories/peer_repository.dart';
 import '../../serial_connection/domain/repositories/serial_repository.dart';
 import '../../serial_connection/presentation/bloc/connection_bloc.dart';
+import 'consecutive_serial_line_filter.dart';
 import '../presentation/cubit/telemetry_cubit.dart';
 
 /// Uniforma el transporte de líneas seriales entre maestro y esclavos.
@@ -19,6 +20,7 @@ class SerialPeerBridge {
        _connection = connection {
     _serialSub = _serial.lines.listen(_onSerialLine);
     _peerSub = _peer.messages.listen(_onPeerMessage);
+    _sessionSub = _peer.sessionStream.listen((_) => _serialLineFilter.reset());
   }
 
   final SerialRepository _serial;
@@ -27,14 +29,19 @@ class SerialPeerBridge {
   final ConnectionBloc _connection;
   late final StreamSubscription<String> _serialSub;
   late final StreamSubscription<PeerMessage> _peerSub;
+  late final StreamSubscription<PeerSession> _sessionSub;
+  final _serialLineFilter = ConsecutiveSerialLineFilter();
 
   void _onSerialLine(String line) {
-    if (!_peer.session.isActive) return;
+    final normalized = line.trim();
+    if (!_peer.session.isActive || !_serialLineFilter.accept(normalized)) {
+      return;
+    }
     unawaited(
       _peer.send(
         PeerMessage(
           type: PeerMessageType.telemetry,
-          payload: {'kind': 'serial_line', 'line': line},
+          payload: {'kind': 'serial_line', 'line': normalized},
         ),
       ),
     );
@@ -65,7 +72,9 @@ class SerialPeerBridge {
       return;
     }
     if (kind != 'serial_line') return;
-    _telemetry.ingestPeerLine(line);
+    final normalized = line.trim();
+    if (!_serialLineFilter.accept(normalized)) return;
+    _telemetry.ingestPeerLine(normalized);
     final session = _peer.session;
     final senderId = message.senderId;
     if (!session.isMaster || senderId == null) return;
@@ -76,7 +85,7 @@ class SerialPeerBridge {
           client.id,
           PeerMessage(
             type: PeerMessageType.telemetry,
-            payload: {'kind': 'serial_line', 'line': line},
+            payload: {'kind': 'serial_line', 'line': normalized},
           ),
         ),
       );
@@ -111,5 +120,6 @@ class SerialPeerBridge {
   Future<void> dispose() async {
     await _serialSub.cancel();
     await _peerSub.cancel();
+    await _sessionSub.cancel();
   }
 }
