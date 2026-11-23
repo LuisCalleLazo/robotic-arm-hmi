@@ -33,6 +33,7 @@ void registerSystem(GetIt sl) {
       () => SystemConfigurationService(
         peer: sl<PeerRepository>(),
         system: sl<SystemRepository>(),
+        positions: sl<SystemPositionRepository>(),
       ),
     );
   unawaited(databaseManager.start());

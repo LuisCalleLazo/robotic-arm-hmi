@@ -7,6 +7,7 @@ import 'package:robotic_arm_hmi/features/system/domain/entities/machine_configur
 import 'package:robotic_arm_hmi/features/system/domain/entities/motor.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/process.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/system_machine.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/system_position.dart';
 import 'package:robotic_arm_hmi/features/system/domain/repositories/system_repository.dart';
 import 'package:robotic_arm_hmi/features/system/domain/services/system_configuration_service.dart';
 
@@ -92,6 +93,59 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('slave receives shared system layout and actuator catalog', () async {
+    peer.messagesController.add(
+      PeerMessage(
+        type: PeerMessageType.telemetry,
+        payload: {
+          'kind': 'sensor_catalog',
+          'machines': [
+            {
+              'id': 12,
+              'name': 'Cinta grande',
+              'type': 'CINTA GRANDE',
+              'parentMachineId': null,
+            },
+          ],
+          'sensors': [
+            {'id': 13, 'machineId': 12, 'key': 'CGC', 'name': 'Detector'},
+          ],
+          'motors': [
+            {
+              'id': 14,
+              'systemMachineId': 12,
+              'key': 'X',
+              'keySensorRight': null,
+              'keySensorLeft': null,
+              'speed': 3000,
+              'maxStepsRight': '12000',
+              'maxStepsLeft': '12000',
+            },
+          ],
+          'servos': [
+            {'id': 15, 'machineId': 12, 'key': 'S', 'maxOpen': 180},
+          ],
+          'positions': [
+            {
+              'id': 16,
+              'number': 1,
+              'type': 'CINTA GRANDE',
+              'systemMachineId': 12,
+            },
+          ],
+        },
+      ),
+    );
+    await Future<void>.delayed(Duration.zero);
+
+    expect(service.sharedMachines.single.name, 'Cinta grande');
+    expect(service.sharedSensors.single.key, 'CGC');
+    expect(service.sharedMotors.single.maxStepsRight, '12000');
+    expect(service.sharedServos.single.maxOpen, 180);
+    expect(service.sharedSystemPositions.single, isA<SystemPosition>());
+    expect(service.sharedSystemPositions.single.systemMachineId, 12);
   });
 }
 

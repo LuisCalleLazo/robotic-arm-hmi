@@ -65,6 +65,8 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   final Map<_ArmAxis, TextEditingController> _speedControllers = {};
   final Map<int, double> _positions = {};
   final Map<int, double> _velocities = {};
+  final Map<int, _MovementTelemetry> _motorTelemetry = {};
+  final Map<String, _MovementTelemetry> _servoTelemetry = {};
   final Map<int, _HmiProcessPlan> _processPlans = {};
   final Set<int> _knownPositions = {};
   final Set<int> _scheduledProcessIds = {};
@@ -663,9 +665,12 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   }
 
   void _onLine(TelemetryLogEntry entry) {
-    if (entry.source == TelemetrySource.serialSent) return;
     final line = entry.line.trim();
     if (line.isEmpty) return;
+    if (entry.source == TelemetrySource.serialSent) {
+      _handleSensorSignal(line);
+      return;
+    }
     var changed = false;
     final sensorSignal = _sensorSignal(line);
     if (sensorSignal != null) {
@@ -674,12 +679,8 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       if (isActive) {
         final newlyActive = _activeSensors.add(key);
         changed = newlyActive || changed;
-        final receivedSerialEvent =
-            entry.source == TelemetrySource.serial ||
-            entry.source == TelemetrySource.peerSerial ||
-            (entry.source == TelemetrySource.simulated && widget.simulating);
-        if (newlyActive && receivedSerialEvent && widget.canSendCommands) {
-          for (final plan in _plansForMachine(_selectedMachine).where(
+        if (newlyActive && widget.canSendCommands) {
+          for (final plan in _processPlans.values.where(
             (plan) =>
                 plan.process.activationSensorId == sensor.id &&
                 (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
@@ -727,6 +728,30 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     if (changed && mounted) setState(() {});
   }
 
+  void _handleSensorSignal(String line) {
+    final signal = _sensorSignal(line);
+    if (signal == null) return;
+    final (sensor, isActive) = signal;
+    final key = sensor.key.trim().toUpperCase();
+    if (!isActive) {
+      final changed = _activeSensors.remove(key);
+      if (changed && mounted) setState(() {});
+      return;
+    }
+
+    final newlyActive = _activeSensors.add(key);
+    if (newlyActive && mounted) setState(() {});
+    if (newlyActive && widget.canSendCommands) {
+      for (final plan in _processPlans.values.where(
+        (plan) =>
+            plan.process.activationSensorId == sensor.id &&
+            (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
+      )) {
+        _queueProcess(plan);
+      }
+    }
+  }
+
   (Sensor, bool)? _sensorSignal(String line) {
     final normalizedLine = line.trim().toUpperCase();
     final sensors = [..._sensors]
@@ -760,44 +785,69 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     final fields = line.split(',');
     if (fields.length < 3) return false;
     final key = fields.first.toUpperCase();
-    for (final axis in _ArmAxis.values) {
-      final motor = _motorFor(axis);
-      if (motor == null || !_wireKeys(motor.key).contains(key)) continue;
-      final positionIndex = fields.length >= 5 ? 2 : 1;
-      final position = double.tryParse(fields[positionIndex]);
-      if (position != null) {
-        _cancelAnimation(motor.id);
-        _positions[motor.id] = position;
-        _knownPositions.add(motor.id);
-        if (_machineState == 'Sin posición recibida') {
-          _machineState = 'Posición sincronizada';
-        }
+    final motor = _motorForKey(key);
+    if (motor == null) return false;
+    final positionIndex = fields.length >= 5 ? 2 : 1;
+    final position = double.tryParse(fields[positionIndex]);
+    if (position != null) {
+      _cancelAnimation(motor.id);
+      _positions[motor.id] = position;
+      _knownPositions.add(motor.id);
+      if (_machineState == 'Sin posición recibida') {
+        _machineState = 'Posición sincronizada';
       }
-      if (fields.length >= 5) {
-        final velocity = double.tryParse(fields[4]);
-        if (velocity != null) {
-          _velocities[motor.id] = velocity;
-          if (velocity != 0) _lastDirections[motor.id] = velocity.sign.toInt();
-        }
-      }
-      if (fields.length >= 6) {
-        _setSensorForDirection(motor, int.tryParse(fields[5]) == 1);
-      }
-      if (fields.length >= 4 && int.tryParse(fields[3]) == 0) {
-        _completePendingAxis(key);
-      }
-      return true;
     }
-    return false;
+    if (fields.length >= 5) {
+      final velocity = double.tryParse(fields[4]);
+      if (velocity != null) {
+        _velocities[motor.id] = velocity;
+        _motorTelemetry
+            .putIfAbsent(motor.id, _MovementTelemetry.new)
+            .currentSpeed = velocity
+            .abs();
+        if (velocity != 0) _lastDirections[motor.id] = velocity.sign.toInt();
+      }
+    }
+    if (fields.length >= 6) {
+      _setSensorForDirection(motor, int.tryParse(fields[5]) == 1);
+    }
+    if (fields.length >= 4 && int.tryParse(fields[3]) == 0) {
+      _finishMotorMovement(motor, _positions[motor.id]);
+      _completePendingAxis(key);
+    }
+    return true;
   }
 
   bool _handleServoTelemetry(String line) {
     final fields = line.split(',');
     if (fields.length < 3) return false;
+    final key = fields.first.toUpperCase();
     final angle = double.tryParse(fields[2]);
     if (angle == null) return false;
-    _servoAngle = angle.clamp(0, 180).toDouble();
     final target = fields.length >= 4 ? double.tryParse(fields[3]) : null;
+    if (target != null) {
+      final metrics = _servoTelemetry.putIfAbsent(key, _MovementTelemetry.new);
+      final sampleTime = DateTime.now();
+      final previousSample = metrics.lastSample;
+      final previousTime = metrics.lastSampleAt;
+      if (previousSample != null && previousTime != null) {
+        final elapsed = sampleTime.difference(previousTime).inMicroseconds;
+        if (elapsed > 0) {
+          metrics.currentSpeed =
+              (angle - previousSample).abs() * 1000000 / elapsed;
+        }
+      }
+      metrics.lastSample = angle;
+      metrics.lastSampleAt = sampleTime;
+      if ((target - angle).abs() >= 0.5) {
+        metrics.startedAt ??= sampleTime;
+        metrics.startValue ??= angle;
+        metrics.target = target;
+      } else {
+        _finishServoMovement(metrics, angle, sampleTime);
+      }
+    }
+    _servoAngle = angle.clamp(0, 180).toDouble();
     if (target != null && (target - angle).abs() < 0.5) {
       _completePendingServo(fields.first, target);
     }
@@ -805,11 +855,12 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   }
 
   bool _isServoTelemetry(String line) {
-    final servo = _selectedServo;
-    return servo != null &&
-        line.toUpperCase().startsWith(
-          '${ArduinoProcessCommandBuilder.commandKey(servo.key).toUpperCase()},',
-        );
+    final key = line.split(',').first.toUpperCase();
+    return _machineServos.any(
+      (servo) =>
+          ArduinoProcessCommandBuilder.commandKey(servo.key).toUpperCase() ==
+          key,
+    );
   }
 
   bool _isPendingServoTelemetry(String line) {
@@ -832,6 +883,9 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     if (event == 'STOP' || event == 'PAUSE' || event == 'PLAY') {
       if (event == 'STOP') {
         _cancelAnimations();
+        for (final motor in _machineMotors) {
+          _finishMotorMovement(motor, _positions[motor.id]);
+        }
         _failPendingProcess(StateError('El proceso fue detenido.'));
       }
       if (event == 'PAUSE') {
@@ -856,6 +910,7 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         _cancelAnimation(motor.id);
         _positions[motor.id] = position;
         _knownPositions.add(motor.id);
+        _finishMotorMovement(motor, position);
         if (_machineState == 'Sin posición recibida') {
           _machineState = 'Posición sincronizada';
         }
@@ -878,6 +933,7 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
             ? motor.keySensorRight
             : motor.keySensorLeft;
         if (sensorKey != null) _activeSensors.add(sensorKey.toUpperCase());
+        _finishMotorMovement(motor, _positions[motor.id]);
       }
       _completePendingAxis(fields[3]);
       _machineState = 'Límite activo';
@@ -889,6 +945,14 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       if (motor != null && distance != null) {
         _lastDirections[motor.id] = distance.sign.toInt();
         final start = _positions[motor.id] ?? 0;
+        final metrics = _motorTelemetry.putIfAbsent(
+          motor.id,
+          _MovementTelemetry.new,
+        );
+        metrics
+          ..startedAt = DateTime.now()
+          ..startValue = start
+          ..target = start + distance;
         final speed = _velocities[motor.id]?.abs();
         _animatePosition(
           motor,
@@ -907,6 +971,7 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         _cancelAnimation(motor.id);
         _positions[motor.id] = position;
         _knownPositions.add(motor.id);
+        _finishMotorMovement(motor, position);
       }
       _completePendingAxis(fields[3]);
       _machineState = _animations.isEmpty ? 'Listo' : 'En movimiento';
@@ -926,6 +991,50 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       if (_wireKeys(motor.key).contains(normalized)) return motor;
     }
     return null;
+  }
+
+  void _finishMotorMovement(Motor motor, double? finalPosition) {
+    final metrics = _motorTelemetry[motor.id];
+    final startedAt = metrics?.startedAt;
+    if (metrics == null || startedAt == null) return;
+    final duration = DateTime.now().difference(startedAt);
+    final start = metrics.startValue;
+    final distance = start == null || finalPosition == null
+        ? (metrics.target != null && start != null
+              ? (metrics.target! - start).abs()
+              : null)
+        : (finalPosition - start).abs();
+    metrics
+      ..lastDuration = duration
+      ..lastAverageSpeed = distance == null || duration.inMicroseconds == 0
+          ? null
+          : distance * 1000000 / duration.inMicroseconds
+      ..startedAt = null
+      ..startValue = null
+      ..target = null;
+  }
+
+  void _finishServoMovement(
+    _MovementTelemetry metrics,
+    double finalAngle,
+    DateTime finishedAt,
+  ) {
+    final startedAt = metrics.startedAt;
+    if (startedAt == null) return;
+    final duration = finishedAt.difference(startedAt);
+    final startAngle = metrics.startValue;
+    final distance = startAngle == null
+        ? null
+        : (finalAngle - startAngle).abs();
+    metrics
+      ..lastDuration = duration
+      ..lastAverageSpeed = distance == null || duration.inMicroseconds == 0
+          ? null
+          : distance * 1000000 / duration.inMicroseconds
+      ..startedAt = null
+      ..startValue = null
+      ..target = null
+      ..currentSpeed = 0;
   }
 
   void _setSensorForDirection(Motor motor, bool active) {
@@ -1103,6 +1212,15 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       for (final animation in _animations.values) {
         animation.startedAt = animation.startedAt.add(pauseDuration);
       }
+      for (final metrics in [
+        ..._motorTelemetry.values,
+        ..._servoTelemetry.values,
+      ]) {
+        final startedAt = metrics.startedAt;
+        if (startedAt != null) {
+          metrics.startedAt = startedAt.add(pauseDuration);
+        }
+      }
     }
     _pauseStartedAt = null;
   }
@@ -1230,21 +1348,135 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         ),
         const Divider(height: 1),
         Expanded(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: ScaraArmCanvas(
-              x: _normalizedPosition(_ArmAxis.x),
-              y: _normalizedPosition(_ArmAxis.y),
-              z: _normalizedPosition(_ArmAxis.z),
-              a: _normalizedPosition(_ArmAxis.a),
-              gripperOpen: _normalizedServoAngle,
-              machineState: _machineState,
-            ),
+          child: Row(
+            children: [
+              SizedBox(width: 132, child: _movementTelemetrySidebar()),
+              const VerticalDivider(width: 1),
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: ScaraArmCanvas(
+                    x: _normalizedPosition(_ArmAxis.x),
+                    y: _normalizedPosition(_ArmAxis.y),
+                    z: _normalizedPosition(_ArmAxis.z),
+                    a: _normalizedPosition(_ArmAxis.a),
+                    gripperOpen: _normalizedServoAngle,
+                    machineState: _machineState,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ],
     ),
   );
+
+  Widget _movementTelemetrySidebar() {
+    final theme = Theme.of(context);
+    final motors = _machineMotors;
+    final servos = _machineServos;
+    return ListView(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            'TELEMETRÍA',
+            style: theme.textTheme.labelSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        for (final motor in motors)
+          _movementTelemetryCard(
+            title: _motorTelemetryTitle(motor),
+            metrics: _motorTelemetry[motor.id],
+            speedUnit: 'pasos/s',
+          ),
+        for (final servo in servos)
+          _movementTelemetryCard(
+            title: '${servo.key} · Servo',
+            metrics:
+                _servoTelemetry[ArduinoProcessCommandBuilder.commandKey(
+                  servo.key,
+                ).toUpperCase()],
+            speedUnit: '°/s',
+          ),
+      ],
+    );
+  }
+
+  String _motorTelemetryTitle(Motor motor) {
+    for (final axis in _ArmAxis.values) {
+      if (_motorFor(axis)?.id == motor.id) return '${axis.key} · ${axis.label}';
+    }
+    return ArduinoProcessCommandBuilder.commandKey(motor.key).toUpperCase();
+  }
+
+  Widget _movementTelemetryCard({
+    required String title,
+    required _MovementTelemetry? metrics,
+    required String speedUnit,
+  }) {
+    final theme = Theme.of(context);
+    final currentSpeed = metrics?.currentSpeed;
+    final duration = metrics?.lastDuration;
+    final averageSpeed = metrics?.lastAverageSpeed;
+    final startedAt = metrics?.startedAt;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 3),
+            Text(
+              '${metrics?.startedAt != null ? 'En movimiento · ' : ''}'
+              '${currentSpeed == null ? '—' : currentSpeed.toStringAsFixed(0)} '
+              '$speedUnit',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall,
+            ),
+            Text(
+              startedAt != null
+                  ? 'Tiempo: ${_formatMovementDuration(DateTime.now().difference(startedAt))}'
+                  : duration == null
+                  ? 'Último: —'
+                  : 'Último: ${_formatMovementDuration(duration)}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall,
+            ),
+            if (averageSpeed != null)
+              Text(
+                'Media: ${averageSpeed.toStringAsFixed(0)} $speedUnit',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall,
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _formatMovementDuration(Duration duration) {
+    if (duration.inMilliseconds < 1000) {
+      return '${duration.inMilliseconds} ms';
+    }
+    return '${(duration.inMilliseconds / 1000).toStringAsFixed(1)} s';
+  }
 
   List<Widget> _rightControls(ColorScheme colors) => [
     _machineSelector(),
@@ -1710,4 +1942,15 @@ class _PositionAnimation {
   final double target;
   DateTime startedAt;
   final Duration duration;
+}
+
+class _MovementTelemetry {
+  double? currentSpeed;
+  Duration? lastDuration;
+  double? lastAverageSpeed;
+  DateTime? startedAt;
+  double? startValue;
+  double? target;
+  DateTime? lastSampleAt;
+  double? lastSample;
 }

@@ -3,20 +3,24 @@ import 'dart:async';
 import '../../../peer_to_peer/domain/entities/peer_entities.dart';
 import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
 import '../entities/machine_configuration.dart';
+import '../entities/motor.dart';
 import '../entities/process.dart';
 import '../entities/process_motors.dart';
 import '../entities/process_servo.dart';
 import '../entities/sensor.dart';
+import '../entities/servo.dart';
 import '../entities/system_machine.dart';
+import '../entities/system_position.dart';
 import '../repositories/system_repository.dart';
+import '../repositories/system_position_repository.dart';
 import 'arduino_process_command_builder.dart';
 
 class SystemConfigurationService {
   SystemConfigurationService({
-    required PeerRepository peer,
-    required SystemRepository system,
-  }) : _peer = peer,
-       _system = system {
+    required this._peer,
+    required this._system,
+    this.positions,
+  }) {
     _messageSub = _peer.messages.listen(_onPeerMessage);
     _sessionSub = _peer.sessionStream.listen(_onSession);
     _onSession(_peer.session);
@@ -24,6 +28,7 @@ class SystemConfigurationService {
 
   final PeerRepository _peer;
   final SystemRepository _system;
+  final SystemPositionRepository? positions;
   final Map<String, int> _machineByClient = {};
   final Map<String, MachineConfiguration> _configurationByClient = {};
   final Map<int, Process> _localSlaveProcesses = {};
@@ -33,6 +38,9 @@ class SystemConfigurationService {
   final _processChanges = StreamController<void>.broadcast();
   List<Sensor> _sharedSensors = const [];
   List<SystemMachine> _sharedMachines = const [];
+  List<Motor> _sharedMotors = const [];
+  List<Servo> _sharedServos = const [];
+  List<SystemPosition> _sharedPositions = const [];
   bool _sensorCatalogRequested = false;
   late final StreamSubscription<PeerMessage> _messageSub;
   late final StreamSubscription<PeerSession> _sessionSub;
@@ -63,10 +71,35 @@ class SystemConfigurationService {
     return List.unmodifiable(machines.values);
   }
 
+  List<Motor> get sharedMotors {
+    final motors = <int, Motor>{
+      for (final motor in _sharedMotors) motor.id: motor,
+      for (final motor
+          in (_configurationByClient['local']?.motors ?? const <Motor>[]))
+        motor.id: motor,
+    };
+    return List.unmodifiable(motors.values);
+  }
+
+  List<Servo> get sharedServos {
+    final servos = <int, Servo>{
+      for (final servo in _sharedServos) servo.id: servo,
+      for (final servo
+          in (_configurationByClient['local']?.servos ?? const <Servo>[]))
+        servo.id: servo,
+    };
+    return List.unmodifiable(servos.values);
+  }
+
+  List<SystemPosition> get sharedSystemPositions =>
+      List.unmodifiable(_sharedPositions);
+
   Stream<void> get sensorCatalogChanges => _sensorCatalogChanges.stream;
   Stream<void> get processChanges => _processChanges.stream;
   List<Process> get localSlaveProcesses =>
       List.unmodifiable(_localSlaveProcesses.values);
+
+  Future<void> publishSystemLayout() => _publishSensorCatalog();
 
   List<ProcessMotors> localSlaveProcessMotors(int processId) =>
       List.unmodifiable(_localSlaveProcessMotors[processId] ?? const []);
@@ -248,6 +281,40 @@ class SystemConfigurationService {
               name: '${item['name'] ?? ''}',
               type: '${item['type'] ?? ''}',
               parentMachineId: _nullableInt(item['parentMachineId']),
+            ),
+          )
+          .toList();
+      _sharedMotors = _mapList(message.payload['motors'])
+          .map(
+            (item) => Motor(
+              id: _int(item['id']),
+              systemMachineId: _int(item['systemMachineId']),
+              key: '${item['key'] ?? ''}',
+              keySensorRight: item['keySensorRight']?.toString(),
+              keySensorLeft: item['keySensorLeft']?.toString(),
+              speed: _double(item['speed']),
+              maxStepsRight: item['maxStepsRight']?.toString(),
+              maxStepsLeft: item['maxStepsLeft']?.toString(),
+            ),
+          )
+          .toList();
+      _sharedServos = _mapList(message.payload['servos'])
+          .map(
+            (item) => Servo(
+              id: _int(item['id']),
+              machineId: _int(item['machineId']),
+              key: '${item['key'] ?? ''}',
+              maxOpen: _double(item['maxOpen'], 180),
+            ),
+          )
+          .toList();
+      _sharedPositions = _mapList(message.payload['positions'])
+          .map(
+            (item) => SystemPosition(
+              id: _int(item['id']),
+              number: _int(item['number']),
+              type: '${item['type'] ?? ''}',
+              systemMachineId: _int(item['systemMachineId']),
             ),
           )
           .toList();
@@ -568,6 +635,9 @@ class SystemConfigurationService {
   Future<void> _sendSensorCatalog(String clientId) async {
     final sensors = await _system.getSensors();
     final machines = await _system.getMachines();
+    final motors = await _system.getMotors();
+    final servos = await _system.getServos();
+    final positions = await this.positions?.getSystemPositions() ?? const [];
     await _peer.sendToClient(
       clientId,
       PeerMessage(
@@ -591,6 +661,40 @@ class SystemConfigurationService {
                   'name': machine.name,
                   'type': machine.type,
                   'parentMachineId': machine.parentMachineId,
+                },
+              )
+              .toList(),
+          'motors': motors
+              .map(
+                (motor) => {
+                  'id': motor.id,
+                  'systemMachineId': motor.systemMachineId,
+                  'key': motor.key,
+                  'keySensorRight': motor.keySensorRight,
+                  'keySensorLeft': motor.keySensorLeft,
+                  'speed': motor.speed,
+                  'maxStepsRight': motor.maxStepsRight,
+                  'maxStepsLeft': motor.maxStepsLeft,
+                },
+              )
+              .toList(),
+          'servos': servos
+              .map(
+                (servo) => {
+                  'id': servo.id,
+                  'machineId': servo.machineId,
+                  'key': servo.key,
+                  'maxOpen': servo.maxOpen,
+                },
+              )
+              .toList(),
+          'positions': positions
+              .map(
+                (position) => {
+                  'id': position.id,
+                  'number': position.number,
+                  'type': position.type,
+                  'systemMachineId': position.systemMachineId,
                 },
               )
               .toList(),

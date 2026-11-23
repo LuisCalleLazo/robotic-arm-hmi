@@ -400,6 +400,8 @@ class _ScaraProcessPainter extends CustomPainter {
       }
     }
 
+    _drawYReadout(canvas, size, y);
+
     if (showBelt && objectOnBelt) {
       final objectX =
           beltRect.left + (sensorX - beltRect.left) * objectProgress / 0.62;
@@ -445,7 +447,7 @@ class _ScaraProcessPainter extends CustomPainter {
         ? size.width * 0.20
         : size.width * (0.12 + armIndex * 0.48 / math.max(1, armCount - 1));
     final yaw = ((x / _maxX).clamp(0, 1) - 0.5) * 1.05;
-    final extension = size.width * (0.20 + (y / _maxY).clamp(0, 1) * 0.28);
+    final extension = size.width * (0.18 + (y / _maxY).clamp(0, 1) * 0.42);
     final carriageY = size.height * (0.29 + (z / _maxZ).clamp(0, 1) * 0.22);
     final shoulder = Offset(columnX, carriageY);
     final beamEnd =
@@ -555,14 +557,35 @@ class _ScaraProcessPainter extends CustomPainter {
     canvas.drawPath(beamPath, beamPaint);
 
     final telescopicStart = beamStart + (beamEnd - beamStart) * 0.48;
-    final innerBeam = Paint()..color = color.withValues(alpha: 0.82);
+    final innerBeam = Paint()..color = const Color(0xFF00B8D9);
     canvas.drawLine(
       telescopicStart,
       beamEnd,
       innerBeam
-        ..strokeWidth = active ? 6 : 4
+        ..strokeWidth = active ? 8 : 4
         ..strokeCap = StrokeCap.square,
     );
+    if (active) {
+      canvas.drawCircle(
+        telescopicStart,
+        7,
+        Paint()
+          ..color = const Color(0xFF00B8D9)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2,
+      );
+      final forearmDirection = beamEnd - telescopicStart;
+      for (final progress in [0.35, 0.7]) {
+        final tick = telescopicStart + forearmDirection * progress;
+        canvas.drawLine(
+          tick + const Offset(0, -7),
+          tick + const Offset(0, 7),
+          Paint()
+            ..color = textColor
+            ..strokeWidth = 1.5,
+        );
+      }
+    }
 
     final motor = Rect.fromCenter(
       center: beamEnd + const Offset(0, 12),
@@ -630,10 +653,12 @@ class _ScaraProcessPainter extends CustomPainter {
       );
       _drawLabel(
         canvas,
-        'Y',
-        Offset((beamStart.dx + beamEnd.dx) / 2, beamStart.dy - 11),
-        textColor,
-        9,
+        'Y · ANTEBRAZO',
+        telescopicStart +
+            (beamEnd - telescopicStart) * 0.56 +
+            const Offset(0, -12),
+        const Color(0xFF00B8D9),
+        10,
         alignCenter: true,
       );
       _drawLabel(
@@ -650,6 +675,58 @@ class _ScaraProcessPainter extends CustomPainter {
         Offset(geometry.toolTip.dx + 13, geometry.toolTip.dy - 4),
         textColor,
         9,
+      );
+    }
+  }
+
+  void _drawYReadout(Canvas canvas, Size size, double position) {
+    final width = math.min(154.0, size.width * 0.48);
+    final rect = Rect.fromLTWH(size.width - width - 8, 8, width, 48);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(8)),
+      Paint()..color = surfaceColor.withValues(alpha: 0.94),
+    );
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(rect, const Radius.circular(8)),
+      Paint()
+        ..color = const Color(0xFF00B8D9)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5,
+    );
+    _drawLabel(
+      canvas,
+      'Y · ANTEBRAZO',
+      Offset(rect.left + 8, rect.top + 17),
+      textColor,
+      10,
+    );
+    final ratio = (position / _maxY).clamp(0, 1).toDouble();
+    _drawLabel(
+      canvas,
+      '${(ratio * 100).round()}%',
+      Offset(rect.right - 8, rect.top + 17),
+      const Color(0xFF00B8D9),
+      10,
+      alignRight: true,
+    );
+    final track = Rect.fromLTWH(rect.left + 8, rect.top + 29, width - 16, 6);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(track, const Radius.circular(3)),
+      Paint()..color = gridColor,
+    );
+    final fill = Rect.fromLTWH(track.left, track.top, track.width * ratio, 6);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(fill, const Radius.circular(3)),
+      Paint()..color = const Color(0xFF00B8D9),
+    );
+    for (final tick in [0.25, 0.5, 0.75]) {
+      final x = track.left + track.width * tick;
+      canvas.drawLine(
+        Offset(x, track.top - 2),
+        Offset(x, track.bottom + 2),
+        Paint()
+          ..color = surfaceColor
+          ..strokeWidth = 1.5,
       );
     }
   }

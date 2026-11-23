@@ -13,6 +13,7 @@ import '../../../serial_connection/presentation/pages/connection_page.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import '../widgets/scara_arm_hmi_panel.dart';
 import '../widgets/serial_console_panel.dart';
+import '../widgets/system_overview_panel.dart';
 
 enum _SystemView { complete, arm }
 
@@ -151,20 +152,30 @@ class _DashboardPageState extends State<DashboardPage> {
                     ),
                   ),
                   Expanded(
-                    child: _systemView == _SystemView.arm
-                        ? ScaraArmHmiPanel(
-                            canSendCommands: canSend,
-                            simulating: simulation,
-                            serialConnected: serialConnected,
-                            connectionLabel: session.isSlave
-                                ? 'Serial compartido'
-                                : connection.isConnected
-                                ? 'Conectado'
-                                : 'Desconectado',
-                            telemetry: context.read<TelemetryCubit>(),
-                            onCommand: _sendCommand,
-                          )
-                        : const _CompleteSystemPlaceholder(),
+                    child: IndexedStack(
+                      index: _systemView == _SystemView.arm ? 0 : 1,
+                      children: [
+                        ScaraArmHmiPanel(
+                          canSendCommands: canSend,
+                          simulating: simulation,
+                          serialConnected: serialConnected,
+                          connectionLabel: session.isSlave
+                              ? 'Serial compartido'
+                              : connection.isConnected
+                              ? 'Conectado'
+                              : 'Desconectado',
+                          telemetry: context.read<TelemetryCubit>(),
+                          onCommand: _sendCommand,
+                        ),
+                        SystemOverviewPanel(
+                          canSendCommands: canSend,
+                          serialConnected: serialConnected,
+                          simulating: simulation,
+                          telemetry: context.read<TelemetryCubit>(),
+                          onCommand: (command) => _sendCommand(command),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               );
@@ -203,36 +214,4 @@ class _DashboardPageState extends State<DashboardPage> {
           : null,
     );
   }
-}
-
-class _CompleteSystemPlaceholder extends StatelessWidget {
-  const _CompleteSystemPlaceholder();
-
-  @override
-  Widget build(BuildContext context) => Center(
-    child: Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(
-            Icons.account_tree_outlined,
-            size: 56,
-            color: Theme.of(context).colorScheme.onSurfaceVariant,
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Vista de sistema completo',
-            style: Theme.of(context).textTheme.titleLarge,
-          ),
-          const SizedBox(height: 6),
-          const Text(
-            'La vista global de cintas y varios brazos se habilitará al '
-            'configurar esos equipos. El control individual del brazo está disponible.',
-            textAlign: TextAlign.center,
-          ),
-        ],
-      ),
-    ),
-  );
 }

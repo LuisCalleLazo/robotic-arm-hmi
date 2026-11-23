@@ -176,6 +176,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
     final text = line.trim();
     if (text.isEmpty) return;
     _console.add(TelemetryLogEntry(line: text, source: source));
+    _lineEvents.add(TelemetryLogEntry(line: text, source: source));
     _dirty = true;
     _flush();
   }

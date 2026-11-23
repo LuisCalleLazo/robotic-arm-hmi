@@ -384,6 +384,13 @@ class SystemLocalDataSource {
         );
   }
 
+  Future<void> deleteSystemPosition(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await (db.delete(
+      db.systemPositions,
+    )..where((table) => table.id.equals(id))).go();
+  }
+
   Future<List<ProcessHistoric>> getProcessHistorics(int processId) async {
     final db = await _databaseManager.getDatabase();
     final rows =

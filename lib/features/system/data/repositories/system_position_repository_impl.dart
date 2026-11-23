@@ -14,4 +14,8 @@ class SystemPositionRepositoryImpl implements SystemPositionRepository {
   @override
   Future<void> saveSystemPosition(SystemPosition position) =>
       _dataSource.saveSystemPosition(position);
+
+  @override
+  Future<void> deleteSystemPosition(int id) =>
+      _dataSource.deleteSystemPosition(id);
 }

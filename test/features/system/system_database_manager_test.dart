@@ -10,8 +10,10 @@ import 'package:robotic_arm_hmi/features/system/data/database/system_database.da
     hide ProcessMotors;
 import 'package:robotic_arm_hmi/features/system/data/database/system_database_manager.dart';
 import 'package:robotic_arm_hmi/features/system/data/datasources/system_local_datasource.dart';
+import 'package:robotic_arm_hmi/features/system/data/repositories/system_position_repository_impl.dart';
 import 'package:robotic_arm_hmi/features/system/data/repositories/system_repository_impl.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/system_machine.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/system_position.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/motor.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/process.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/process_motors.dart';
@@ -141,6 +143,39 @@ void main() {
     expect(await repository.getProcessMotors(40), isEmpty);
     expect(await repository.getProcessServos(40), isEmpty);
     expect(await repository.getProcesses(), isEmpty);
+  });
+
+  test('persists and removes system layout positions', () async {
+    peer.setSession(
+      const PeerSession(
+        role: PeerRole.master,
+        status: PeerConnectionStatus.listening,
+      ),
+    );
+    await manager.start();
+    final machines = SystemRepositoryImpl(SystemLocalDataSource(manager));
+    final positions = SystemPositionRepositoryImpl(
+      SystemLocalDataSource(manager),
+    );
+    await machines.saveMachine(
+      SystemMachine(id: 1, name: 'Cinta', type: 'CINTA GRANDE'),
+    );
+    await positions.saveSystemPosition(
+      SystemPosition(
+        id: 2,
+        number: 1,
+        type: 'CINTA GRANDE',
+        systemMachineId: 1,
+      ),
+    );
+
+    final saved = await positions.getSystemPositions();
+    expect(saved.single.type, 'CINTA GRANDE');
+    expect(saved.single.number, 1);
+    expect(saved.single.systemMachineId, 1);
+
+    await positions.deleteSystemPosition(2);
+    expect(await positions.getSystemPositions(), isEmpty);
   });
 }
 
