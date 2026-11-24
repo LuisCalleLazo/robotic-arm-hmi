@@ -10,16 +10,14 @@ import '../presentation/cubit/telemetry_cubit.dart';
 /// Uniforma el transporte de líneas seriales entre maestro y esclavos.
 class SerialPeerBridge {
   SerialPeerBridge({
-    required SerialRepository serial,
-    required PeerRepository peer,
-    required TelemetryCubit telemetry,
-    required ConnectionBloc connection,
-  }) : _serial = serial,
-       _peer = peer,
-       _telemetry = telemetry,
-       _connection = connection {
+    required this._serial,
+    required this._peer,
+    required this._telemetry,
+    required this._connection,
+  }) {
     _serialSub = _serial.lines.listen(_onSerialLine);
     _peerSub = _peer.messages.listen(_onPeerMessage);
+    _telemetrySub = _telemetry.lineEvents.listen(_onTelemetryLine);
     _sessionSub = _peer.sessionStream.listen((_) => _serialLineFilter.reset());
   }
 
@@ -29,12 +27,27 @@ class SerialPeerBridge {
   final ConnectionBloc _connection;
   late final StreamSubscription<String> _serialSub;
   late final StreamSubscription<PeerMessage> _peerSub;
+  late final StreamSubscription<TelemetryLogEntry> _telemetrySub;
   late final StreamSubscription<PeerSession> _sessionSub;
   final _serialLineFilter = ConsecutiveSerialLineFilter();
 
   void _onSerialLine(String line) {
+    _sendSerialLine(line);
+  }
+
+  void _onTelemetryLine(TelemetryLogEntry entry) {
+    if (entry.source == TelemetrySource.simulated) {
+      _sendSerialLine(entry.line);
+    }
+  }
+
+  void _sendSerialLine(String line) {
     final normalized = line.trim();
-    if (!_peer.session.isActive || !_serialLineFilter.accept(normalized)) {
+    if (!_peer.session.isActive ||
+        !_serialLineFilter.accept(
+          normalized,
+          allowRepeated: _isSensorSignal(normalized),
+        )) {
       return;
     }
     unawaited(
@@ -73,7 +86,12 @@ class SerialPeerBridge {
     }
     if (kind != 'serial_line') return;
     final normalized = line.trim();
-    if (!_serialLineFilter.accept(normalized)) return;
+    if (!_serialLineFilter.accept(
+      normalized,
+      allowRepeated: _isSensorSignal(normalized),
+    )) {
+      return;
+    }
     _telemetry.ingestPeerLine(normalized);
     final session = _peer.session;
     final senderId = message.senderId;
@@ -92,6 +110,9 @@ class SerialPeerBridge {
     }
   }
 
+  bool _isSensorSignal(String line) =>
+      RegExp(r'^[A-Z][A-Z0-9_-]*[01]$', caseSensitive: false).hasMatch(line);
+
   Future<void> _forwardCommand(PeerMessage message) async {
     final senderId = message.senderId;
     final line = message.payload['line'];
@@ -99,6 +120,11 @@ class SerialPeerBridge {
         senderId == null ||
         line is! String ||
         line.trim().isEmpty) {
+      return;
+    }
+    if (_telemetry.state.isSimulating) {
+      _telemetry.recordSent(line.trim());
+      _telemetry.sendSimulatedCommand(line.trim());
       return;
     }
     if (!_connection.state.isConnected) {
@@ -120,6 +146,7 @@ class SerialPeerBridge {
   Future<void> dispose() async {
     await _serialSub.cancel();
     await _peerSub.cancel();
+    await _telemetrySub.cancel();
     await _sessionSub.cancel();
   }
 }

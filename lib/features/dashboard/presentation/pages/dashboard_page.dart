@@ -32,15 +32,20 @@ class _DashboardPageState extends State<DashboardPage> {
     final trimmedCommand = command.trim();
     if (trimmedCommand.isEmpty) return;
     final telemetry = context.read<TelemetryCubit>();
-    if (telemetry.state.isSimulating) {
-      telemetry.recordSent(trimmedCommand);
-      telemetry.sendSimulatedCommand(simulatedCommand ?? trimmedCommand);
-      return;
-    }
     final peer = GetIt.I<PeerRepository>();
     if (peer.session.isSlave) {
       if (!peer.session.isActive) {
         throw StateError('Conéctate al servidor maestro para enviar comandos.');
+      }
+      if (_isSensorSignal(trimmedCommand)) {
+        await peer.send(
+          PeerMessage(
+            type: PeerMessageType.telemetry,
+            payload: {'kind': 'serial_line', 'line': trimmedCommand},
+          ),
+        );
+        telemetry.recordSent(trimmedCommand);
+        return;
       }
       if (!peer.session.permission.canSendCommands) {
         throw StateError(
@@ -53,7 +58,16 @@ class _DashboardPageState extends State<DashboardPage> {
           payload: {'kind': 'serial_command', 'line': trimmedCommand},
         ),
       );
-      if (mounted) telemetry.recordSent(trimmedCommand);
+      telemetry.recordSent(trimmedCommand);
+      return;
+    }
+    if (telemetry.state.isSimulating) {
+      if (_isSensorSignal(trimmedCommand)) {
+        telemetry.ingestPeerLine(trimmedCommand);
+        return;
+      }
+      telemetry.recordSent(trimmedCommand);
+      telemetry.sendSimulatedCommand(simulatedCommand ?? trimmedCommand);
       return;
     }
     if (!context.read<ConnectionBloc>().state.isConnected) {
@@ -61,6 +75,9 @@ class _DashboardPageState extends State<DashboardPage> {
     }
     context.read<ConnectionBloc>().add(CommandSent(trimmedCommand));
   }
+
+  bool _isSensorSignal(String line) =>
+      RegExp(r'^[A-Z][A-Z0-9_-]*[01]$', caseSensitive: false).hasMatch(line);
 
   @override
   Widget build(BuildContext context) {

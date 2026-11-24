@@ -101,6 +101,7 @@ class TelemetryCubit extends Cubit<TelemetryState> {
   late final Timer _timer;
 
   Stream<TelemetryLogEntry> get lineEvents => _lineEvents.stream;
+  bool get isSimulationReady => _simulator.isReady;
 
   int _seq = 0;
   int _version = 0;

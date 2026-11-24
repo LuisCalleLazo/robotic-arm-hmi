@@ -28,6 +28,8 @@ class ProcessProgrammingPage extends StatefulWidget {
 
 class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   final _runningProcesses = <int>{};
+  final _activeProcesses = <int>{};
+  final _queuedActivations = <int>{};
   final _activeSensors = <String>{};
   final _motorDirections = <String, int>{};
 
@@ -39,6 +41,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   List<_SavedPlan> _plans = const [];
   bool _loading = true;
   bool _wasConnected = false;
+  bool _wasSimulating = false;
   bool _startupQueued = false;
   bool _serialReady = false;
   bool _processTelemetryEnabled = false;
@@ -51,6 +54,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   Completer<void>? _groupFinished;
   Future<void> _executionQueue = Future<void>.value();
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
+  StreamSubscription<TelemetryState>? _telemetrySubscription;
   StreamSubscription<SerialConnectionState>? _connectionSubscription;
   StreamSubscription<PeerSession>? _peerSubscription;
   StreamSubscription<void>? _sensorCatalogSubscription;
@@ -60,11 +64,17 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   ConnectionBloc get _connection => GetIt.I<ConnectionBloc>();
   TelemetryCubit get _telemetry => GetIt.I<TelemetryCubit>();
   PeerRepository get _peer => GetIt.I<PeerRepository>();
+  bool get _isSimulating => _telemetry.state.isSimulating;
+  bool get _hasExecutionTransport =>
+      _connection.state.isConnected || _isSimulating;
 
   @override
   void initState() {
     super.initState();
     _lineSubscription = _telemetry.lineEvents.listen(_onSerialLine);
+    _wasSimulating = _isSimulating;
+    _serialReady = _isSimulating && _telemetry.isSimulationReady;
+    _telemetrySubscription = _telemetry.stream.listen(_onTelemetryStateChanged);
     _connectionSubscription = _connection.stream.listen(_onConnectionChanged);
     final configurationService = GetIt.I<SystemConfigurationService>();
     _sensorCatalogSubscription = configurationService.sensorCatalogChanges
@@ -98,6 +108,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   @override
   void dispose() {
     _lineSubscription?.cancel();
+    _telemetrySubscription?.cancel();
     _connectionSubscription?.cancel();
     _peerSubscription?.cancel();
     _sensorCatalogSubscription?.cancel();
@@ -159,7 +170,25 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     }
     if (!mounted) return;
     setState(() => _loading = false);
-    if (_connection.state.isConnected) _queueStartupPlans();
+    if (_hasExecutionTransport) _queueStartupPlans();
+  }
+
+  void _onTelemetryStateChanged(TelemetryState state) {
+    if (state.isSimulating == _wasSimulating) return;
+    _wasSimulating = state.isSimulating;
+    _startupQueued = false;
+    _serialReady = state.isSimulating && _telemetry.isSimulationReady;
+    _executionGeneration++;
+    _readyProbeTimer?.cancel();
+    _readyProbeTimer = null;
+    if (!state.isSimulating) {
+      _activeSensors.clear();
+      _queuedActivations.clear();
+      _failPending(StateError('Se detuvo la emulación.'));
+    } else if (_serialReady && !_loading) {
+      _queueStartupPlans();
+    }
+    if (mounted) setState(() {});
   }
 
   int? _inferMachineId(
@@ -211,16 +240,22 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   }
 
   void _queueStartupPlans() {
-    if (_startupQueued ||
-        !_connection.state.isConnected ||
-        !_peer.session.isMaster) {
+    if (_startupQueued || !_hasExecutionTransport || !_peer.session.isMaster) {
       return;
     }
     final activePlans = _plans
         .where((plan) => plan.motors.isNotEmpty || plan.servos.isNotEmpty)
         .toList();
     if (activePlans.isEmpty) return;
-    if (!_serialReady) {
+    if (_isSimulating && !_telemetry.isSimulationReady) {
+      if (mounted) {
+        setState(
+          () => _executionMessage = 'Esperando que el emulador esté listo.',
+        );
+      }
+      return;
+    }
+    if (!_isSimulating && !_serialReady) {
       _startArduinoReadyProbe();
       return;
     }
@@ -244,8 +279,12 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       _message('Solo el maestro puede ejecutar procesos por serial.');
       return;
     }
-    if (!_connection.state.isConnected) {
-      _message('Conecta el serial antes de iniciar el proceso.');
+    if (!_hasExecutionTransport) {
+      _message('Conecta el serial o inicia la emulación.');
+      return;
+    }
+    if (_isSimulating && !_telemetry.isSimulationReady) {
+      _message('Espera a que el emulador termine el homing inicial.');
       return;
     }
     if (plan.motors.isEmpty && plan.servos.isEmpty) {
@@ -298,7 +337,15 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
 
   void _queuePlan(_SavedPlan plan) {
     if (plan.motors.isEmpty && plan.servos.isEmpty) return;
-    if (!_runningProcesses.add(plan.process.id)) return;
+    final processId = plan.process.id;
+    final replayAfterCurrent = _activeProcesses.contains(processId);
+    if (replayAfterCurrent) {
+      if (!_queuedActivations.add(processId)) {
+        return;
+      }
+    } else if (!_runningProcesses.add(processId)) {
+      return;
+    }
     if (mounted) {
       setState(
         () => _executionMessage = 'Iniciando proceso "${plan.process.name}".',
@@ -308,8 +355,15 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     _executionQueue = _executionQueue
         .then((_) {
           if (generation != _executionGeneration) {
+            if (replayAfterCurrent) {
+              _queuedActivations.remove(processId);
+            }
             return Future<void>.value();
           }
+          if (replayAfterCurrent) {
+            _queuedActivations.remove(processId);
+          }
+          _activeProcesses.add(processId);
           return _executePlan(plan);
         })
         .catchError((Object error) {
@@ -322,14 +376,34 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
           }
         })
         .whenComplete(() {
-          _runningProcesses.remove(plan.process.id);
+          _activeProcesses.remove(processId);
+          if (!_queuedActivations.contains(processId)) {
+            _runningProcesses.remove(processId);
+          }
           if (mounted) setState(() {});
         });
   }
 
   Future<void> _executePlan(_SavedPlan plan) async {
-    if (!_connection.state.isConnected || !_peer.session.isMaster) {
-      throw StateError('Se requiere una conexión serial activa en el maestro.');
+    if (!_hasExecutionTransport || !_peer.session.isMaster) {
+      throw StateError(
+        'Se requiere serial conectado o emulación activa en el maestro.',
+      );
+    }
+    final executionGeneration = _executionGeneration;
+    if (_isSimulating && !_telemetry.isSimulationReady) {
+      for (
+        var attempt = 0;
+        attempt < 100 && _isSimulating && !_telemetry.isSimulationReady;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      }
+      if (!_isSimulating || !_telemetry.isSimulationReady) {
+        throw StateError(
+          'El emulador no quedó listo para ejecutar el proceso.',
+        );
+      }
     }
     final motorById = {for (final item in _motors) item.id: item};
     final servoById = {for (final item in _servos) item.id: item};
@@ -377,6 +451,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
         ),
       );
       await _sendGroup(line, actions);
+      if (executionGeneration != _executionGeneration) {
+        throw StateError('La ejecución del proceso fue interrumpida.');
+      }
     }
     if (mounted) {
       setState(
@@ -416,6 +493,18 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     if (mounted) {
       setState(() => _executionMessage = 'Enviando por serial: $line');
     }
+    if (_isSimulating) {
+      _telemetry.recordSent(line);
+      _telemetry.sendSimulatedCommand(line);
+      await Future<void>.delayed(const Duration(seconds: 5));
+      if (!_isSimulating) {
+        throw StateError('Se detuvo la emulación durante el paso.');
+      }
+      _groupFinished = null;
+      _pendingAxes = {};
+      _pendingServos.clear();
+      return;
+    }
     _connection.add(CommandSent(line));
     final longest = actions
         .map((item) => item.speed == 0 ? 0.0 : item.value.abs() / item.speed)
@@ -436,7 +525,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
 
   void _onSerialLine(TelemetryLogEntry entry) {
     final line = entry.line.trim();
-    if (entry.source == TelemetrySource.serial &&
+    if ((entry.source == TelemetrySource.serial ||
+            entry.source == TelemetrySource.simulated) &&
         (line == 'BC,INFO,LISTO' || line.startsWith('BC,STATUS,'))) {
       _serialReady = true;
       _readyProbeTimer?.cancel();
@@ -508,9 +598,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       _failPending(StateError('El movimiento fue detenido.'));
     }
 
-    if (entry.source == TelemetrySource.simulated ||
-        entry.source == TelemetrySource.serialSent ||
-        !_connection.state.isConnected ||
+    if (entry.source == TelemetrySource.serialSent ||
+        !_hasExecutionTransport ||
         !_peer.session.isMaster) {
       return;
     }
@@ -521,8 +610,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       _activeSensors.removeAll(keys);
       return;
     }
+    final triggeredProcessIds = <int>{};
     for (final key in keys) {
-      if (!_activeSensors.add(key)) continue;
+      _activeSensors.add(key);
       for (final sensor in _sensors) {
         if (key != sensor.key.trim().toUpperCase() &&
             key != _commandKey(sensor.key).toUpperCase()) {
@@ -533,7 +623,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
               item.process.activationSensorId == sensor.id &&
               (item.motors.isNotEmpty || item.servos.isNotEmpty),
         )) {
-          _queuePlan(plan);
+          if (triggeredProcessIds.add(plan.process.id)) {
+            _queuePlan(plan);
+          }
         }
       }
     }
@@ -739,9 +831,22 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
 
   void _ensureProcessTelemetry() {
-    if (_processTelemetryEnabled || !_connection.state.isConnected) return;
+    if (_processTelemetryEnabled ||
+        !_connection.state.isConnected ||
+        _isSimulating) {
+      return;
+    }
     _connection.add(const CommandSent('BCT100'));
     _processTelemetryEnabled = true;
+  }
+
+  void _sendProcessControlCommand(String command) {
+    if (_isSimulating) {
+      _telemetry.recordSent(command);
+      _telemetry.sendSimulatedCommand(command);
+      return;
+    }
+    _connection.add(CommandSent(command));
   }
 
   static String _commandKey(String key) =>
@@ -802,7 +907,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
                         : 'Iniciar proceso',
                     onPressed:
                         !_peer.session.isMaster ||
-                            !_connection.state.isConnected ||
+                            !_hasExecutionTransport ||
                             (plan.motors.isEmpty && plan.servos.isEmpty) ||
                             _runningProcesses.contains(plan.process.id)
                         ? null
@@ -841,38 +946,48 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       child: Row(
         children: [
           Icon(
-            _connection.state.isConnected ? Icons.usb : Icons.usb_off,
-            color: _connection.state.isConnected ? Colors.green : Colors.grey,
+            _isSimulating
+                ? Icons.developer_mode
+                : _connection.state.isConnected
+                ? Icons.usb
+                : Icons.usb_off,
+            color: _isSimulating || _connection.state.isConnected
+                ? Colors.green
+                : Colors.grey,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              _connection.state.isConnected
+              _isSimulating
+                  ? _telemetry.isSimulationReady
+                        ? 'Emulador listo · 5 segundos por paso'
+                        : 'Emulador ejecutando homing inicial'
+                  : _connection.state.isConnected
                   ? _serialReady
                         ? 'Arduino listo · procesos al conectar'
                         : 'Serial conectado · esperando respuesta del Arduino'
-                  : 'Conecta el serial para ejecutar los procesos',
+                  : 'Conecta el serial o inicia la emulación',
             ),
           ),
           IconButton(
             tooltip: 'Pausar',
-            onPressed: _connection.state.isConnected
-                ? () => _connection.add(const CommandSent('BCPAUSE'))
+            onPressed: _hasExecutionTransport
+                ? () => _sendProcessControlCommand('BCPAUSE')
                 : null,
             icon: const Icon(Icons.pause),
           ),
           IconButton(
             tooltip: 'Continuar',
-            onPressed: _connection.state.isConnected
-                ? () => _connection.add(const CommandSent('BCPLAY'))
+            onPressed: _hasExecutionTransport
+                ? () => _sendProcessControlCommand('BCPLAY')
                 : null,
             icon: const Icon(Icons.play_arrow),
           ),
           IconButton(
             tooltip: 'Detener todo',
             color: Colors.red,
-            onPressed: _connection.state.isConnected
-                ? () => _connection.add(const CommandSent('BCSTOP'))
+            onPressed: _hasExecutionTransport
+                ? () => _sendProcessControlCommand('BCSTOP')
                 : null,
             icon: const Icon(Icons.stop),
           ),

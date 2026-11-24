@@ -25,4 +25,14 @@ void main() {
 
     expect(forwarded, 1);
   });
+
+  test('allows repeated sensor activation reports through the peer bridge', () {
+    final filter = ConsecutiveSerialLineFilter();
+
+    expect(filter.accept('CGC1'), isTrue);
+    expect(filter.accept('CGC1', allowRepeated: true), isTrue);
+    expect(filter.accept('CGC1', allowRepeated: true), isTrue);
+    expect(filter.accept('CGC1'), isFalse);
+    expect(filter.accept('CGC0', allowRepeated: true), isTrue);
+  });
 }

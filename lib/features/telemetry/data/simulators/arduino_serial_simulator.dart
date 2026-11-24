@@ -34,6 +34,7 @@ class ArduinoSerialSimulator {
 
   Stream<String> get lines => _lines.stream;
   bool get isRunning => _running;
+  bool get isReady => _running && _state == 'IDLE' && _phase == 'idle';
 
   void start() {
     if (_running) return;
@@ -365,6 +366,7 @@ class ArduinoSerialSimulator {
         _state = 'IDLE';
         _emit('STATE,IDLE');
         _setPhase('idle');
+        _emit('BC,INFO,LISTO');
       case 'routeMove':
         final pose = _route[_routeStep];
         _interpolate(pose.take(4).toList(), _ticks, 6);

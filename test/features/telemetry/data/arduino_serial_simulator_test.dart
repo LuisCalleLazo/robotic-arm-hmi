@@ -84,6 +84,8 @@ void main() {
 
     simulator.start();
     await tester.pump(const Duration(seconds: 9));
+    expect(simulator.isReady, isTrue);
+    expect(lines, contains('BC,INFO,LISTO'));
     simulator.sendCommand('BCX100:2000 BCY-100:800');
     await tester.pump(const Duration(seconds: 2));
 
