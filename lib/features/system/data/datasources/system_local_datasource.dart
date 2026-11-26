@@ -106,6 +106,8 @@ class SystemLocalDataSource {
             machineId: row.machineId,
             mqttTopic: row.mqttTopic,
             mqttExpectedMessage: row.mqttExpectedMessage,
+            mqttCompletionTopic: row.mqttCompletionTopic,
+            mqttCompletionMessage: row.mqttCompletionMessage,
           ),
         )
         .toList();
@@ -124,6 +126,8 @@ class SystemLocalDataSource {
             activationSensorId: const Value(null),
             mqttTopic: Value(process.mqttTopic),
             mqttExpectedMessage: Value(process.mqttExpectedMessage),
+            mqttCompletionTopic: Value(process.mqttCompletionTopic),
+            mqttCompletionMessage: Value(process.mqttCompletionMessage),
           ),
         );
   }

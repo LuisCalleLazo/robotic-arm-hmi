@@ -1507,6 +1507,28 @@ class $ProcessesTable extends Processes
         type: DriftSqlType.string,
         requiredDuringInsert: false,
       );
+  static const VerificationMeta _mqttCompletionTopicMeta =
+      const VerificationMeta('mqttCompletionTopic');
+  @override
+  late final GeneratedColumn<String> mqttCompletionTopic =
+      GeneratedColumn<String>(
+        'mqtt_completion_topic',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _mqttCompletionMessageMeta =
+      const VerificationMeta('mqttCompletionMessage');
+  @override
+  late final GeneratedColumn<String> mqttCompletionMessage =
+      GeneratedColumn<String>(
+        'mqtt_completion_message',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1516,6 +1538,8 @@ class $ProcessesTable extends Processes
     activationSensorId,
     mqttTopic,
     mqttExpectedMessage,
+    mqttCompletionTopic,
+    mqttCompletionMessage,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1578,6 +1602,24 @@ class $ProcessesTable extends Processes
         ),
       );
     }
+    if (data.containsKey('mqtt_completion_topic')) {
+      context.handle(
+        _mqttCompletionTopicMeta,
+        mqttCompletionTopic.isAcceptableOrUnknown(
+          data['mqtt_completion_topic']!,
+          _mqttCompletionTopicMeta,
+        ),
+      );
+    }
+    if (data.containsKey('mqtt_completion_message')) {
+      context.handle(
+        _mqttCompletionMessageMeta,
+        mqttCompletionMessage.isAcceptableOrUnknown(
+          data['mqtt_completion_message']!,
+          _mqttCompletionMessageMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1615,6 +1657,14 @@ class $ProcessesTable extends Processes
         DriftSqlType.string,
         data['${effectivePrefix}mqtt_expected_message'],
       ),
+      mqttCompletionTopic: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}mqtt_completion_topic'],
+      ),
+      mqttCompletionMessage: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}mqtt_completion_message'],
+      ),
     );
   }
 
@@ -1632,6 +1682,8 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
   final int? activationSensorId;
   final String? mqttTopic;
   final String? mqttExpectedMessage;
+  final String? mqttCompletionTopic;
+  final String? mqttCompletionMessage;
   const ProcessRow({
     required this.id,
     required this.name,
@@ -1640,6 +1692,8 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     this.activationSensorId,
     this.mqttTopic,
     this.mqttExpectedMessage,
+    this.mqttCompletionTopic,
+    this.mqttCompletionMessage,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1658,6 +1712,12 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     }
     if (!nullToAbsent || mqttExpectedMessage != null) {
       map['mqtt_expected_message'] = Variable<String>(mqttExpectedMessage);
+    }
+    if (!nullToAbsent || mqttCompletionTopic != null) {
+      map['mqtt_completion_topic'] = Variable<String>(mqttCompletionTopic);
+    }
+    if (!nullToAbsent || mqttCompletionMessage != null) {
+      map['mqtt_completion_message'] = Variable<String>(mqttCompletionMessage);
     }
     return map;
   }
@@ -1679,6 +1739,12 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       mqttExpectedMessage: mqttExpectedMessage == null && nullToAbsent
           ? const Value.absent()
           : Value(mqttExpectedMessage),
+      mqttCompletionTopic: mqttCompletionTopic == null && nullToAbsent
+          ? const Value.absent()
+          : Value(mqttCompletionTopic),
+      mqttCompletionMessage: mqttCompletionMessage == null && nullToAbsent
+          ? const Value.absent()
+          : Value(mqttCompletionMessage),
     );
   }
 
@@ -1697,6 +1763,12 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       mqttExpectedMessage: serializer.fromJson<String?>(
         json['mqttExpectedMessage'],
       ),
+      mqttCompletionTopic: serializer.fromJson<String?>(
+        json['mqttCompletionTopic'],
+      ),
+      mqttCompletionMessage: serializer.fromJson<String?>(
+        json['mqttCompletionMessage'],
+      ),
     );
   }
   @override
@@ -1710,6 +1782,10 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       'activationSensorId': serializer.toJson<int?>(activationSensorId),
       'mqttTopic': serializer.toJson<String?>(mqttTopic),
       'mqttExpectedMessage': serializer.toJson<String?>(mqttExpectedMessage),
+      'mqttCompletionTopic': serializer.toJson<String?>(mqttCompletionTopic),
+      'mqttCompletionMessage': serializer.toJson<String?>(
+        mqttCompletionMessage,
+      ),
     };
   }
 
@@ -1721,6 +1797,8 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     Value<int?> activationSensorId = const Value.absent(),
     Value<String?> mqttTopic = const Value.absent(),
     Value<String?> mqttExpectedMessage = const Value.absent(),
+    Value<String?> mqttCompletionTopic = const Value.absent(),
+    Value<String?> mqttCompletionMessage = const Value.absent(),
   }) => ProcessRow(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -1733,6 +1811,12 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     mqttExpectedMessage: mqttExpectedMessage.present
         ? mqttExpectedMessage.value
         : this.mqttExpectedMessage,
+    mqttCompletionTopic: mqttCompletionTopic.present
+        ? mqttCompletionTopic.value
+        : this.mqttCompletionTopic,
+    mqttCompletionMessage: mqttCompletionMessage.present
+        ? mqttCompletionMessage.value
+        : this.mqttCompletionMessage,
   );
   ProcessRow copyWithCompanion(ProcessesCompanion data) {
     return ProcessRow(
@@ -1747,6 +1831,12 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
       mqttExpectedMessage: data.mqttExpectedMessage.present
           ? data.mqttExpectedMessage.value
           : this.mqttExpectedMessage,
+      mqttCompletionTopic: data.mqttCompletionTopic.present
+          ? data.mqttCompletionTopic.value
+          : this.mqttCompletionTopic,
+      mqttCompletionMessage: data.mqttCompletionMessage.present
+          ? data.mqttCompletionMessage.value
+          : this.mqttCompletionMessage,
     );
   }
 
@@ -1759,7 +1849,9 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
           ..write('machineId: $machineId, ')
           ..write('activationSensorId: $activationSensorId, ')
           ..write('mqttTopic: $mqttTopic, ')
-          ..write('mqttExpectedMessage: $mqttExpectedMessage')
+          ..write('mqttExpectedMessage: $mqttExpectedMessage, ')
+          ..write('mqttCompletionTopic: $mqttCompletionTopic, ')
+          ..write('mqttCompletionMessage: $mqttCompletionMessage')
           ..write(')'))
         .toString();
   }
@@ -1773,6 +1865,8 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
     activationSensorId,
     mqttTopic,
     mqttExpectedMessage,
+    mqttCompletionTopic,
+    mqttCompletionMessage,
   );
   @override
   bool operator ==(Object other) =>
@@ -1784,7 +1878,9 @@ class ProcessRow extends DataClass implements Insertable<ProcessRow> {
           other.machineId == this.machineId &&
           other.activationSensorId == this.activationSensorId &&
           other.mqttTopic == this.mqttTopic &&
-          other.mqttExpectedMessage == this.mqttExpectedMessage);
+          other.mqttExpectedMessage == this.mqttExpectedMessage &&
+          other.mqttCompletionTopic == this.mqttCompletionTopic &&
+          other.mqttCompletionMessage == this.mqttCompletionMessage);
 }
 
 class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
@@ -1795,6 +1891,8 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
   final Value<int?> activationSensorId;
   final Value<String?> mqttTopic;
   final Value<String?> mqttExpectedMessage;
+  final Value<String?> mqttCompletionTopic;
+  final Value<String?> mqttCompletionMessage;
   const ProcessesCompanion({
     this.id = const Value.absent(),
     this.name = const Value.absent(),
@@ -1803,6 +1901,8 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     this.activationSensorId = const Value.absent(),
     this.mqttTopic = const Value.absent(),
     this.mqttExpectedMessage = const Value.absent(),
+    this.mqttCompletionTopic = const Value.absent(),
+    this.mqttCompletionMessage = const Value.absent(),
   });
   ProcessesCompanion.insert({
     this.id = const Value.absent(),
@@ -1812,6 +1912,8 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     this.activationSensorId = const Value.absent(),
     this.mqttTopic = const Value.absent(),
     this.mqttExpectedMessage = const Value.absent(),
+    this.mqttCompletionTopic = const Value.absent(),
+    this.mqttCompletionMessage = const Value.absent(),
   }) : name = Value(name),
        order = Value(order);
   static Insertable<ProcessRow> custom({
@@ -1822,6 +1924,8 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     Expression<int>? activationSensorId,
     Expression<String>? mqttTopic,
     Expression<String>? mqttExpectedMessage,
+    Expression<String>? mqttCompletionTopic,
+    Expression<String>? mqttCompletionMessage,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1833,6 +1937,10 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
       if (mqttTopic != null) 'mqtt_topic': mqttTopic,
       if (mqttExpectedMessage != null)
         'mqtt_expected_message': mqttExpectedMessage,
+      if (mqttCompletionTopic != null)
+        'mqtt_completion_topic': mqttCompletionTopic,
+      if (mqttCompletionMessage != null)
+        'mqtt_completion_message': mqttCompletionMessage,
     });
   }
 
@@ -1844,6 +1952,8 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
     Value<int?>? activationSensorId,
     Value<String?>? mqttTopic,
     Value<String?>? mqttExpectedMessage,
+    Value<String?>? mqttCompletionTopic,
+    Value<String?>? mqttCompletionMessage,
   }) {
     return ProcessesCompanion(
       id: id ?? this.id,
@@ -1853,6 +1963,9 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
       activationSensorId: activationSensorId ?? this.activationSensorId,
       mqttTopic: mqttTopic ?? this.mqttTopic,
       mqttExpectedMessage: mqttExpectedMessage ?? this.mqttExpectedMessage,
+      mqttCompletionTopic: mqttCompletionTopic ?? this.mqttCompletionTopic,
+      mqttCompletionMessage:
+          mqttCompletionMessage ?? this.mqttCompletionMessage,
     );
   }
 
@@ -1882,6 +1995,16 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
         mqttExpectedMessage.value,
       );
     }
+    if (mqttCompletionTopic.present) {
+      map['mqtt_completion_topic'] = Variable<String>(
+        mqttCompletionTopic.value,
+      );
+    }
+    if (mqttCompletionMessage.present) {
+      map['mqtt_completion_message'] = Variable<String>(
+        mqttCompletionMessage.value,
+      );
+    }
     return map;
   }
 
@@ -1894,7 +2017,9 @@ class ProcessesCompanion extends UpdateCompanion<ProcessRow> {
           ..write('machineId: $machineId, ')
           ..write('activationSensorId: $activationSensorId, ')
           ..write('mqttTopic: $mqttTopic, ')
-          ..write('mqttExpectedMessage: $mqttExpectedMessage')
+          ..write('mqttExpectedMessage: $mqttExpectedMessage, ')
+          ..write('mqttCompletionTopic: $mqttCompletionTopic, ')
+          ..write('mqttCompletionMessage: $mqttCompletionMessage')
           ..write(')'))
         .toString();
   }
@@ -6014,6 +6139,8 @@ typedef $$ProcessesTableCreateCompanionBuilder =
       Value<int?> activationSensorId,
       Value<String?> mqttTopic,
       Value<String?> mqttExpectedMessage,
+      Value<String?> mqttCompletionTopic,
+      Value<String?> mqttCompletionMessage,
     });
 typedef $$ProcessesTableUpdateCompanionBuilder =
     ProcessesCompanion Function({
@@ -6024,6 +6151,8 @@ typedef $$ProcessesTableUpdateCompanionBuilder =
       Value<int?> activationSensorId,
       Value<String?> mqttTopic,
       Value<String?> mqttExpectedMessage,
+      Value<String?> mqttCompletionTopic,
+      Value<String?> mqttCompletionMessage,
     });
 
 final class $$ProcessesTableReferences
@@ -6154,6 +6283,16 @@ class $$ProcessesTableFilterComposer
 
   ColumnFilters<String> get mqttExpectedMessage => $composableBuilder(
     column: $table.mqttExpectedMessage,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mqttCompletionTopic => $composableBuilder(
+    column: $table.mqttCompletionTopic,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get mqttCompletionMessage => $composableBuilder(
+    column: $table.mqttCompletionMessage,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6313,6 +6452,16 @@ class $$ProcessesTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get mqttCompletionTopic => $composableBuilder(
+    column: $table.mqttCompletionTopic,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get mqttCompletionMessage => $composableBuilder(
+    column: $table.mqttCompletionMessage,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$SystemMachinesTableOrderingComposer get machineId {
     final $$SystemMachinesTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6383,6 +6532,16 @@ class $$ProcessesTableAnnotationComposer
 
   GeneratedColumn<String> get mqttExpectedMessage => $composableBuilder(
     column: $table.mqttExpectedMessage,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get mqttCompletionTopic => $composableBuilder(
+    column: $table.mqttCompletionTopic,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get mqttCompletionMessage => $composableBuilder(
+    column: $table.mqttCompletionMessage,
     builder: (column) => column,
   );
 
@@ -6549,6 +6708,8 @@ class $$ProcessesTableTableManager
                 Value<int?> activationSensorId = const Value.absent(),
                 Value<String?> mqttTopic = const Value.absent(),
                 Value<String?> mqttExpectedMessage = const Value.absent(),
+                Value<String?> mqttCompletionTopic = const Value.absent(),
+                Value<String?> mqttCompletionMessage = const Value.absent(),
               }) => ProcessesCompanion(
                 id: id,
                 name: name,
@@ -6557,6 +6718,8 @@ class $$ProcessesTableTableManager
                 activationSensorId: activationSensorId,
                 mqttTopic: mqttTopic,
                 mqttExpectedMessage: mqttExpectedMessage,
+                mqttCompletionTopic: mqttCompletionTopic,
+                mqttCompletionMessage: mqttCompletionMessage,
               ),
           createCompanionCallback:
               ({
@@ -6567,6 +6730,8 @@ class $$ProcessesTableTableManager
                 Value<int?> activationSensorId = const Value.absent(),
                 Value<String?> mqttTopic = const Value.absent(),
                 Value<String?> mqttExpectedMessage = const Value.absent(),
+                Value<String?> mqttCompletionTopic = const Value.absent(),
+                Value<String?> mqttCompletionMessage = const Value.absent(),
               }) => ProcessesCompanion.insert(
                 id: id,
                 name: name,
@@ -6575,6 +6740,8 @@ class $$ProcessesTableTableManager
                 activationSensorId: activationSensorId,
                 mqttTopic: mqttTopic,
                 mqttExpectedMessage: mqttExpectedMessage,
+                mqttCompletionTopic: mqttCompletionTopic,
+                mqttCompletionMessage: mqttCompletionMessage,
               ),
           withReferenceMapper: (p0) => p0
               .map(

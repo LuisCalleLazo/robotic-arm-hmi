@@ -64,6 +64,8 @@ class Processes extends Table {
       integer().nullable().references(Sensors, #id)();
   TextColumn get mqttTopic => text().nullable()();
   TextColumn get mqttExpectedMessage => text().nullable()();
+  TextColumn get mqttCompletionTopic => text().nullable()();
+  TextColumn get mqttCompletionMessage => text().nullable()();
 
   @override
   Set<Column<Object>> get primaryKey => {id};
@@ -163,7 +165,7 @@ class SystemDatabase extends _$SystemDatabase {
       );
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -190,6 +192,10 @@ class SystemDatabase extends _$SystemDatabase {
       if (from < 5) {
         await m.addColumn(processes, processes.mqttTopic);
         await m.addColumn(processes, processes.mqttExpectedMessage);
+      }
+      if (from < 6) {
+        await m.addColumn(processes, processes.mqttCompletionTopic);
+        await m.addColumn(processes, processes.mqttCompletionMessage);
       }
     },
   );

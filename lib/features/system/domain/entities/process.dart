@@ -5,6 +5,8 @@ class Process {
   final int? machineId;
   final String? mqttTopic;
   final String? mqttExpectedMessage;
+  final String? mqttCompletionTopic;
+  final String? mqttCompletionMessage;
 
   Process({
     required this.id,
@@ -13,5 +15,7 @@ class Process {
     this.machineId,
     this.mqttTopic,
     this.mqttExpectedMessage,
+    this.mqttCompletionTopic,
+    this.mqttCompletionMessage,
   });
 }

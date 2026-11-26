@@ -127,6 +127,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
                     machineId: _inferMachineId(process, motors, servos),
                     mqttTopic: process.mqttTopic,
                     mqttExpectedMessage: process.mqttExpectedMessage,
+                    mqttCompletionTopic: process.mqttCompletionTopic,
+                    mqttCompletionMessage: process.mqttCompletionMessage,
                   )
                 : process,
             motors: motors,
@@ -439,10 +441,33 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
         throw StateError('La ejecución del proceso fue interrumpida.');
       }
     }
+    final completionMessage = await _publishCompletionMqtt(plan.process);
     if (mounted) {
-      setState(
-        () => _executionMessage = 'Proceso "${plan.process.name}" finalizado.',
-      );
+      setState(() {
+        _executionMessage = completionMessage == null
+            ? 'Proceso "${plan.process.name}" finalizado.'
+            : 'Proceso "${plan.process.name}" finalizado. $completionMessage';
+      });
+    }
+  }
+
+  Future<String?> _publishCompletionMqtt(Process process) async {
+    final topic = process.mqttCompletionTopic?.trim();
+    final message = process.mqttCompletionMessage;
+    if (topic == null || message == null || topic.isEmpty || message.isEmpty) {
+      return null;
+    }
+
+    final mqtt = GetIt.I<MqttConnectionService>();
+    if (mqtt.state.isConnected != true) {
+      return 'No se envió MQTT de finalización: broker desconectado.';
+    }
+
+    try {
+      await mqtt.publish(topic: topic, payload: message);
+      return 'MQTT de finalización enviado a "$topic".';
+    } catch (error) {
+      return 'Error al enviar MQTT de finalización: $error';
     }
   }
 
@@ -617,6 +642,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       machineId: draft.machine.id,
       mqttTopic: draft.mqttTopic,
       mqttExpectedMessage: draft.mqttExpectedMessage,
+      mqttCompletionTopic: draft.mqttCompletionTopic,
+      mqttCompletionMessage: draft.mqttCompletionMessage,
     );
     try {
       await GetIt.I<SystemConfigurationService>().saveProcessDefinition(
@@ -768,11 +795,17 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
             child: ListTile(
               title: Text(plan.process.name),
               subtitle: Text(
-                plan.process.mqttTopic == null
-                    ? 'Al conectar el serial'
-                    : 'MQTT · ${plan.process.mqttTopic} = '
-                          '${plan.process.mqttExpectedMessage}',
-                maxLines: 1,
+                [
+                  plan.process.mqttTopic == null
+                      ? 'Inicio: al conectar el serial'
+                      : 'Inicio MQTT · ${plan.process.mqttTopic} = '
+                            '${plan.process.mqttExpectedMessage}',
+                  plan.process.mqttCompletionTopic == null
+                      ? 'Fin: sin envío MQTT'
+                      : 'Fin MQTT · ${plan.process.mqttCompletionTopic} = '
+                            '${plan.process.mqttCompletionMessage}',
+                ].join('\n'),
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
               trailing: Row(
@@ -939,12 +972,16 @@ class _ProcessDraft {
     required this.machine,
     required this.mqttTopic,
     required this.mqttExpectedMessage,
+    required this.mqttCompletionTopic,
+    required this.mqttCompletionMessage,
   });
 
   final String name;
   final SystemMachine machine;
   final String? mqttTopic;
   final String? mqttExpectedMessage;
+  final String? mqttCompletionTopic;
+  final String? mqttCompletionMessage;
 }
 
 enum _ProcessActivation { serial, mqtt }
@@ -968,9 +1005,13 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
   final _name = TextEditingController();
   final _topic = TextEditingController();
   final _expectedMessage = TextEditingController();
+  final _completionTopic = TextEditingController();
+  final _completionMessage = TextEditingController();
   SystemMachine? _machine;
   String? _selectedTopic;
+  String? _selectedCompletionTopic;
   _ProcessActivation _activation = _ProcessActivation.serial;
+  bool _sendCompletionMqtt = false;
 
   @override
   void initState() {
@@ -984,8 +1025,13 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
         widget.machines.firstOrNull;
     _topic.text = process?.mqttTopic ?? '';
     _expectedMessage.text = process?.mqttExpectedMessage ?? '';
+    _completionTopic.text = process?.mqttCompletionTopic ?? '';
+    _completionMessage.text = process?.mqttCompletionMessage ?? '';
     if (process?.mqttTopic != null) {
       _activation = _ProcessActivation.mqtt;
+    }
+    if (process?.mqttCompletionTopic != null) {
+      _sendCompletionMqtt = true;
     }
   }
 
@@ -994,6 +1040,8 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
     _name.dispose();
     _topic.dispose();
     _expectedMessage.dispose();
+    _completionTopic.dispose();
+    _completionMessage.dispose();
     super.dispose();
   }
 
@@ -1015,12 +1063,29 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
             mqttExpectedMessage!.isEmpty)) {
       return;
     }
+
+    final completionTopic = _sendCompletionMqtt
+        ? _completionTopic.text.trim()
+        : null;
+    final completionMessage = _sendCompletionMqtt
+        ? _completionMessage.text
+        : null;
+    if (_sendCompletionMqtt &&
+        (completionTopic == null ||
+            completionTopic.isEmpty ||
+            completionMessage == null ||
+            completionMessage.isEmpty)) {
+      return;
+    }
+
     Navigator.of(context).pop(
       _ProcessDraft(
         name: name,
         machine: machine,
         mqttTopic: mqttTopic,
         mqttExpectedMessage: mqttExpectedMessage,
+        mqttCompletionTopic: completionTopic,
+        mqttCompletionMessage: completionMessage,
       ),
     );
   }
@@ -1116,7 +1181,7 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                 controller: _topic,
                 onChanged: (_) => setState(() => _selectedTopic = null),
                 decoration: const InputDecoration(
-                  labelText: 'Topic MQTT (también puedes escribirlo)',
+                  labelText: 'Topic MQTT de inicio (también puedes escribirlo)',
                   hintText: 'maquina/entrada',
                   border: OutlineInputBorder(),
                 ),
@@ -1126,8 +1191,69 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                 controller: _expectedMessage,
                 onChanged: (_) => setState(() {}),
                 decoration: const InputDecoration(
-                  labelText: 'Texto esperado',
+                  labelText: 'Mensaje MQTT esperado para inicio',
                   hintText: 'INICIAR',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SwitchListTile.adaptive(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Enviar MQTT al finalizar proceso'),
+              value: _sendCompletionMqtt,
+              onChanged: (value) {
+                setState(() {
+                  _sendCompletionMqtt = value;
+                });
+              },
+            ),
+            if (_sendCompletionMqtt) ...[
+              if (widget.mqttTopics.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedCompletionTopic,
+                  decoration: const InputDecoration(
+                    labelText: 'Topics MQTT conocidos',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: widget.mqttTopics
+                      .map(
+                        (topic) =>
+                            DropdownMenuItem(value: topic, child: Text(topic)),
+                      )
+                      .toList(),
+                  onChanged: (topic) {
+                    if (topic != null) {
+                      setState(() {
+                        _selectedCompletionTopic = topic;
+                        _completionTopic.text = topic;
+                      });
+                    }
+                  },
+                ),
+              ],
+              const SizedBox(height: 12),
+              TextField(
+                controller: _completionTopic,
+                onChanged: (_) {
+                  setState(() {
+                    _selectedCompletionTopic = null;
+                  });
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Topic MQTT de finalización',
+                  hintText: 'maquina/salida',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _completionMessage,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'Mensaje MQTT de finalización',
+                  hintText: 'FINALIZADO',
                   border: OutlineInputBorder(),
                 ),
               ),
@@ -1147,7 +1273,10 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                 _machine != null &&
                 (_activation == _ProcessActivation.serial ||
                     (_topic.text.trim().isNotEmpty &&
-                        _expectedMessage.text.isNotEmpty))
+                        _expectedMessage.text.isNotEmpty)) &&
+                (!_sendCompletionMqtt ||
+                    (_completionTopic.text.trim().isNotEmpty &&
+                        _completionMessage.text.isNotEmpty))
             ? _submit
             : null,
         child: Text(_editing ? 'Guardar' : 'Crear'),
@@ -1228,6 +1357,8 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       machineId: _plan.process.machineId,
       mqttTopic: draft.mqttTopic,
       mqttExpectedMessage: draft.mqttExpectedMessage,
+      mqttCompletionTopic: draft.mqttCompletionTopic,
+      mqttCompletionMessage: draft.mqttCompletionMessage,
     );
     setState(() => _saving = true);
     try {
@@ -1463,10 +1594,16 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
               leading: const Icon(Icons.precision_manufacturing),
               title: Text(machineName ?? 'Máquina no disponible'),
               subtitle: Text(
-                _plan.process.mqttTopic == null
-                    ? 'Se inicia al conectar el serial'
-                    : 'Se inicia con MQTT: ${_plan.process.mqttTopic} = '
-                          '${_plan.process.mqttExpectedMessage}',
+                [
+                  _plan.process.mqttTopic == null
+                      ? 'Inicio: al conectar el serial'
+                      : 'Inicio MQTT: ${_plan.process.mqttTopic} = '
+                            '${_plan.process.mqttExpectedMessage}',
+                  _plan.process.mqttCompletionTopic == null
+                      ? 'Fin: sin envío MQTT'
+                      : 'Fin MQTT: ${_plan.process.mqttCompletionTopic} = '
+                            '${_plan.process.mqttCompletionMessage}',
+                ].join('\n'),
               ),
             ),
           ),

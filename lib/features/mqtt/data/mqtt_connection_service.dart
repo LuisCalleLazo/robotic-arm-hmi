@@ -137,6 +137,24 @@ class MqttConnectionService {
     _emit(const BrokerConnectionState());
   }
 
+  Future<void> publish({required String topic, required String payload}) async {
+    final normalizedTopic = topic.trim();
+    if (normalizedTopic.isEmpty) {
+      throw ArgumentError('El topic MQTT no puede estar vacío.');
+    }
+    final client = _client;
+    if (client == null || _state.isConnected != true) {
+      throw StateError('No hay conexión activa al broker MQTT.');
+    }
+
+    final builder = mqtt.MqttClientPayloadBuilder()..addString(payload);
+    client.publishMessage(
+      normalizedTopic,
+      mqtt.MqttQos.atMostOnce,
+      builder.payload!,
+    );
+  }
+
   Future<void> _disconnectClient() async {
     final client = _client;
     _client = null;

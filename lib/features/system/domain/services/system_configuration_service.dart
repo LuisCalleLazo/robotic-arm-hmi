@@ -164,6 +164,18 @@ class SystemConfigurationService {
     if (message != null && message.isEmpty) {
       return 'El mensaje MQTT esperado no puede estar vacío.';
     }
+
+    final completionTopic = process.mqttCompletionTopic?.trim();
+    final completionMessage = process.mqttCompletionMessage;
+    if ((completionTopic == null) != (completionMessage == null)) {
+      return 'Configura tanto el topic como el mensaje MQTT de finalización.';
+    }
+    if (completionTopic != null && completionTopic.isEmpty) {
+      return 'El topic MQTT de finalización no puede estar vacío.';
+    }
+    if (completionMessage != null && completionMessage.isEmpty) {
+      return 'El mensaje MQTT de finalización no puede estar vacío.';
+    }
     return null;
   }
 
