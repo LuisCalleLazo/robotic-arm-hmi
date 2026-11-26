@@ -3,16 +3,14 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
-import '../../../peer_to_peer/domain/entities/peer_role.dart';
-import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
-import '../../../peer_to_peer/domain/entities/peer_session.dart';
+import '../../../mqtt/data/mqtt_connection_service.dart';
+import '../../../mqtt/domain/entities/mqtt_incoming_message.dart';
 import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
 import '../../domain/entities/motor.dart';
 import '../../domain/entities/process.dart';
 import '../../domain/entities/process_motors.dart';
 import '../../domain/entities/process_servo.dart';
-import '../../domain/entities/sensor.dart';
 import '../../domain/entities/servo.dart';
 import '../../domain/entities/system_machine.dart';
 import '../../domain/repositories/system_repository.dart';
@@ -28,16 +26,14 @@ class ProcessProgrammingPage extends StatefulWidget {
 
 class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   final _runningProcesses = <int>{};
-  final _activeProcesses = <int>{};
-  final _queuedActivations = <int>{};
-  final _activeSensors = <String>{};
-  final _motorDirections = <String, int>{};
+  final List<_SavedPlan> _queuedPlans = [];
+  final List<MqttIncomingMessage> _pendingMqttMessages = [];
+  final Set<String> _mqttTopics = {};
 
   List<SystemMachine> _machines = const [];
   List<SystemMachine> _allMachines = const [];
   List<Motor> _motors = const [];
   List<Servo> _servos = const [];
-  List<Sensor> _sensors = const [];
   List<_SavedPlan> _plans = const [];
   bool _loading = true;
   bool _wasConnected = false;
@@ -52,18 +48,16 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   Set<String> _pendingAxes = {};
   final Map<String, _PendingServo> _pendingServos = {};
   Completer<void>? _groupFinished;
-  Future<void> _executionQueue = Future<void>.value();
+  bool _drainingQueue = false;
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
   StreamSubscription<TelemetryState>? _telemetrySubscription;
   StreamSubscription<SerialConnectionState>? _connectionSubscription;
-  StreamSubscription<PeerSession>? _peerSubscription;
-  StreamSubscription<void>? _sensorCatalogSubscription;
+  StreamSubscription<MqttIncomingMessage>? _mqttMessageSubscription;
+  StreamSubscription<void>? _machineCatalogSubscription;
   StreamSubscription<void>? _processChangesSubscription;
-  PeerRole? _loadedRole;
 
   ConnectionBloc get _connection => GetIt.I<ConnectionBloc>();
   TelemetryCubit get _telemetry => GetIt.I<TelemetryCubit>();
-  PeerRepository get _peer => GetIt.I<PeerRepository>();
   bool get _isSimulating => _telemetry.state.isSimulating;
   bool get _hasExecutionTransport =>
       _connection.state.isConnected || _isSimulating;
@@ -76,28 +70,20 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     _serialReady = _isSimulating && _telemetry.isSimulationReady;
     _telemetrySubscription = _telemetry.stream.listen(_onTelemetryStateChanged);
     _connectionSubscription = _connection.stream.listen(_onConnectionChanged);
+    _mqttMessageSubscription = GetIt.I<MqttConnectionService>().messages.listen(
+      _onMqttMessage,
+    );
     final configurationService = GetIt.I<SystemConfigurationService>();
-    _sensorCatalogSubscription = configurationService.sensorCatalogChanges
+    _machineCatalogSubscription = configurationService.machineCatalogChanges
         .listen((_) {
-          if (!mounted || !_peer.session.isSlave) return;
+          if (!mounted) return;
           setState(() => _loading = true);
           _loadOptions();
         });
     _processChangesSubscription = configurationService.processChanges.listen((
       _,
     ) {
-      if (!mounted || !_peer.session.isSlave) return;
-      setState(() => _loading = true);
-      _loadOptions();
-    });
-    _loadedRole = _peer.session.role;
-    _peerSubscription = _peer.sessionStream.listen((session) {
-      if (session.role == _loadedRole) return;
-      _loadedRole = session.role;
-      _startupQueued = false;
-      _serialReady = false;
-      _readyProbeTimer?.cancel();
-      _readyProbeTimer = null;
+      if (!mounted) return;
       setState(() => _loading = true);
       _loadOptions();
     });
@@ -110,8 +96,8 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     _lineSubscription?.cancel();
     _telemetrySubscription?.cancel();
     _connectionSubscription?.cancel();
-    _peerSubscription?.cancel();
-    _sensorCatalogSubscription?.cancel();
+    _mqttMessageSubscription?.cancel();
+    _machineCatalogSubscription?.cancel();
     _processChangesSubscription?.cancel();
     _readyProbeTimer?.cancel();
     super.dispose();
@@ -119,35 +105,18 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
 
   Future<void> _loadOptions() async {
     try {
-      final configurationService = GetIt.I<SystemConfigurationService>();
-      final List<Process> processes;
-      if (_peer.session.isSlave) {
-        final configuration = configurationService.localSlaveConfiguration;
-        _allMachines = configurationService.sharedMachines;
-        _machines = configuration == null ? const [] : [configuration.machine];
-        _motors = configuration?.motors ?? const [];
-        _servos = configuration?.servos ?? const [];
-        _sensors = configurationService.sharedSensors;
-        processes = configurationService.localSlaveProcesses;
-      } else {
-        final repository = GetIt.I<SystemRepository>();
-        _allMachines = await repository.getMachines();
-        _machines = _allMachines
-            .where((machine) => machine.parentMachineId == null)
-            .toList();
-        _motors = await repository.getMotors();
-        _servos = await repository.getServos();
-        _sensors = await repository.getSensors();
-        processes = await repository.getProcesses();
-      }
+      final repository = GetIt.I<SystemRepository>();
+      _allMachines = await repository.getMachines();
+      _machines = _allMachines
+          .where((machine) => machine.parentMachineId == null)
+          .toList();
+      _motors = await repository.getMotors();
+      _servos = await repository.getServos();
+      final processes = await repository.getProcesses();
       final plans = <_SavedPlan>[];
       for (final process in processes) {
-        final motors = _peer.session.isSlave
-            ? configurationService.localSlaveProcessMotors(process.id)
-            : await GetIt.I<SystemRepository>().getProcessMotors(process.id);
-        final servos = _peer.session.isSlave
-            ? configurationService.localSlaveProcessServos(process.id)
-            : await GetIt.I<SystemRepository>().getProcessServos(process.id);
+        final motors = await repository.getProcessMotors(process.id);
+        final servos = await repository.getProcessServos(process.id);
         plans.add(
           _SavedPlan(
             process: process.machineId == null
@@ -155,8 +124,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
                     id: process.id,
                     name: process.name,
                     order: process.order,
-                    activationSensorId: process.activationSensorId,
                     machineId: _inferMachineId(process, motors, servos),
+                    mqttTopic: process.mqttTopic,
+                    mqttExpectedMessage: process.mqttExpectedMessage,
                   )
                 : process,
             motors: motors,
@@ -170,7 +140,33 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     }
     if (!mounted) return;
     setState(() => _loading = false);
+    final pendingMessages = List<MqttIncomingMessage>.of(_pendingMqttMessages);
+    _pendingMqttMessages.clear();
+    for (final message in pendingMessages) {
+      _handleMqttMessage(message);
+    }
     if (_hasExecutionTransport) _queueStartupPlans();
+  }
+
+  void _onMqttMessage(MqttIncomingMessage message) {
+    if (_mqttTopics.add(message.topic) && mounted) setState(() {});
+    if (_loading) {
+      _pendingMqttMessages.add(message);
+      return;
+    }
+    _handleMqttMessage(message);
+  }
+
+  void _handleMqttMessage(MqttIncomingMessage message) {
+    final matchingPlans = _plans.where(
+      (plan) =>
+          plan.process.mqttTopic == message.topic &&
+          plan.process.mqttExpectedMessage == message.payload &&
+          (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
+    );
+    for (final plan in matchingPlans) {
+      _queuePlan(plan);
+    }
   }
 
   void _onTelemetryStateChanged(TelemetryState state) {
@@ -182,12 +178,13 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     _readyProbeTimer?.cancel();
     _readyProbeTimer = null;
     if (!state.isSimulating) {
-      _activeSensors.clear();
-      _queuedActivations.clear();
+      _queuedPlans.clear();
+      _runningProcesses.clear();
       _failPending(StateError('Se detuvo la emulación.'));
     } else if (_serialReady && !_loading) {
       _queueStartupPlans();
     }
+    _drainQueue();
     if (mounted) setState(() {});
   }
 
@@ -202,11 +199,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     final servo = _servos
         .where((item) => servos.any((action) => action.servoId == item.id))
         .firstOrNull;
-    final sensor = _sensors
-        .where((item) => item.id == process.activationSensorId)
-        .firstOrNull;
-    final componentMachineId =
-        motor?.systemMachineId ?? servo?.machineId ?? sensor?.machineId;
+    final componentMachineId = motor?.systemMachineId ?? servo?.machineId;
     if (componentMachineId == null) return null;
     return _allMachines
             .where((item) => item.id == componentMachineId)
@@ -231,22 +224,30 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       _wasConnected = false;
       _startupQueued = false;
       _serialReady = false;
+      _queuedPlans.clear();
+      _runningProcesses.clear();
       _readyProbeTimer?.cancel();
       _readyProbeTimer = null;
       _executionGeneration++;
-      _activeSensors.clear();
       _failPending(StateError('Se perdió la conexión serial.'));
     }
   }
 
   void _queueStartupPlans() {
-    if (_startupQueued || !_hasExecutionTransport || !_peer.session.isMaster) {
+    if (_startupQueued || !_hasExecutionTransport) {
       return;
     }
     final activePlans = _plans
         .where((plan) => plan.motors.isNotEmpty || plan.servos.isNotEmpty)
         .toList();
-    if (activePlans.isEmpty) return;
+    final startupPlans = activePlans
+        .where((plan) => plan.process.mqttTopic == null)
+        .toList();
+    if (startupPlans.isEmpty) {
+      _startupQueued = true;
+      _drainQueue();
+      return;
+    }
     if (_isSimulating && !_telemetry.isSimulationReady) {
       if (mounted) {
         setState(
@@ -260,42 +261,12 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       return;
     }
     _startupQueued = true;
-    final plans = activePlans
-        .where((plan) => plan.process.activationSensorId == null)
-        .toList();
-    if (activePlans.any(
-      (plan) =>
-          plan.process.activationSensorId != null || plan.servos.isNotEmpty,
-    )) {
+    if (startupPlans.any((plan) => plan.servos.isNotEmpty)) {
       _ensureProcessTelemetry();
     }
-    for (final plan in plans) {
+    for (final plan in startupPlans) {
       _queuePlan(plan);
     }
-  }
-
-  void _startProcessManually(_SavedPlan plan) {
-    if (!_peer.session.isMaster) {
-      _message('Solo el maestro puede ejecutar procesos por serial.');
-      return;
-    }
-    if (!_hasExecutionTransport) {
-      _message('Conecta el serial o inicia la emulación.');
-      return;
-    }
-    if (_isSimulating && !_telemetry.isSimulationReady) {
-      _message('Espera a que el emulador termine el homing inicial.');
-      return;
-    }
-    if (plan.motors.isEmpty && plan.servos.isEmpty) {
-      _message('Agrega movimientos antes de iniciar este proceso.');
-      return;
-    }
-    if (_runningProcesses.contains(plan.process.id)) {
-      return;
-    }
-    if (plan.servos.isNotEmpty) _ensureProcessTelemetry();
-    _queuePlan(plan);
   }
 
   void _startArduinoReadyProbe() {
@@ -315,7 +286,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   }
 
   void _probeArduino() {
-    if (!_connection.state.isConnected || !_peer.session.isMaster) {
+    if (!_connection.state.isConnected) {
       _readyProbeTimer?.cancel();
       _readyProbeTimer = null;
       return;
@@ -337,58 +308,69 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
 
   void _queuePlan(_SavedPlan plan) {
     if (plan.motors.isEmpty && plan.servos.isEmpty) return;
-    final processId = plan.process.id;
-    final replayAfterCurrent = _activeProcesses.contains(processId);
-    if (replayAfterCurrent) {
-      if (!_queuedActivations.add(processId)) {
-        return;
-      }
-    } else if (!_runningProcesses.add(processId)) {
-      return;
-    }
+    _queuedPlans.add(plan);
+    _runningProcesses.add(plan.process.id);
+    if (plan.servos.isNotEmpty) _ensureProcessTelemetry();
     if (mounted) {
       setState(
-        () => _executionMessage = 'Iniciando proceso "${plan.process.name}".',
+        () => _executionMessage =
+            'En cola: "${plan.process.name}" (${_queuedPlans.length}).',
       );
     }
-    final generation = _executionGeneration;
-    _executionQueue = _executionQueue
-        .then((_) {
-          if (generation != _executionGeneration) {
-            if (replayAfterCurrent) {
-              _queuedActivations.remove(processId);
-            }
-            return Future<void>.value();
-          }
-          if (replayAfterCurrent) {
-            _queuedActivations.remove(processId);
-          }
-          _activeProcesses.add(processId);
-          return _executePlan(plan);
-        })
-        .catchError((Object error) {
-          if (generation == _executionGeneration) _executionGeneration++;
-          if (mounted) {
-            setState(
-              () =>
-                  _executionMessage = 'Proceso "${plan.process.name}": $error',
-            );
-          }
-        })
-        .whenComplete(() {
-          _activeProcesses.remove(processId);
-          if (!_queuedActivations.contains(processId)) {
-            _runningProcesses.remove(processId);
-          }
-          if (mounted) setState(() {});
-        });
+    if (_connection.state.isConnected && !_serialReady && !_isSimulating) {
+      _startArduinoReadyProbe();
+    }
+    _drainQueue();
+  }
+
+  bool get _queueTransportReady =>
+      _hasExecutionTransport &&
+      (_isSimulating ? _telemetry.isSimulationReady : _serialReady);
+
+  void _drainQueue() {
+    if (_drainingQueue || !_queueTransportReady || _queuedPlans.isEmpty) return;
+    _drainingQueue = true;
+    unawaited(_drainQueuedPlans(_executionGeneration));
+  }
+
+  Future<void> _drainQueuedPlans(int generation) async {
+    while (_queuedPlans.isNotEmpty) {
+      if (generation != _executionGeneration) {
+        _queuedPlans.clear();
+        _runningProcesses.clear();
+        break;
+      }
+
+      final plan = _queuedPlans.removeAt(0);
+      if (mounted) {
+        setState(
+          () => _executionMessage = 'Ejecutando "${plan.process.name}".',
+        );
+      }
+      try {
+        await _executePlan(plan);
+      } catch (error) {
+        if (mounted) {
+          setState(
+            () => _executionMessage = 'Proceso "${plan.process.name}": $error',
+          );
+        }
+      } finally {
+        if (!_queuedPlans.any(
+          (queued) => queued.process.id == plan.process.id,
+        )) {
+          _runningProcesses.remove(plan.process.id);
+        }
+        if (mounted) setState(() {});
+      }
+    }
+    _drainingQueue = false;
+    _drainQueue();
   }
 
   Future<void> _executePlan(_SavedPlan plan) async {
-    if (!_hasExecutionTransport || !_peer.session.isMaster) {
-      throw StateError(
-        'Se requiere serial conectado o emulación activa en el maestro.',
-      );
+    if (!_hasExecutionTransport) {
+      throw StateError('Se requiere serial conectado o emulación activa.');
     }
     final executionGeneration = _executionGeneration;
     if (_isSimulating && !_telemetry.isSimulationReady) {
@@ -410,8 +392,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     final groups = <int, List<_WireAction>>{};
     for (final item in plan.motors) {
       final motor = motorById[item.motorId];
-      if (motor == null)
+      if (motor == null) {
         throw StateError('No se encontró el motor ${item.name}.');
+      }
       groups
           .putIfAbsent(item.order, () => [])
           .add(
@@ -425,8 +408,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     }
     for (final item in plan.servos) {
       final servo = servoById[item.servoId];
-      if (servo == null)
+      if (servo == null) {
         throw StateError('No se encontró el servo ${item.name}.');
+      }
       groups
           .putIfAbsent(item.order, () => [])
           .add(
@@ -539,7 +523,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       }
       _queueStartupPlans();
     }
-    _updateMotorDirection(line);
+    _drainQueue();
     if (entry.source == TelemetrySource.serial &&
         line.startsWith('BC,EVT,FIN,')) {
       final parts = line.split(',');
@@ -597,38 +581,6 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       _executionGeneration++;
       _failPending(StateError('El movimiento fue detenido.'));
     }
-
-    if (entry.source == TelemetrySource.serialSent ||
-        !_hasExecutionTransport ||
-        !_peer.session.isMaster) {
-      return;
-    }
-    final signal = _sensorSignal(line);
-    if (signal == null) return;
-    final keys = _expandedSensorKeys(signal.$1);
-    if (!signal.$2) {
-      _activeSensors.removeAll(keys);
-      return;
-    }
-    final triggeredProcessIds = <int>{};
-    for (final key in keys) {
-      _activeSensors.add(key);
-      for (final sensor in _sensors) {
-        if (key != sensor.key.trim().toUpperCase() &&
-            key != _commandKey(sensor.key).toUpperCase()) {
-          continue;
-        }
-        for (final plan in _plans.where(
-          (item) =>
-              item.process.activationSensorId == sensor.id &&
-              (item.motors.isNotEmpty || item.servos.isNotEmpty),
-        )) {
-          if (triggeredProcessIds.add(plan.process.id)) {
-            _queuePlan(plan);
-          }
-        }
-      }
-    }
   }
 
   void _completePendingAxis(String axis) {
@@ -639,100 +591,11 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
     }
   }
 
-  void _updateMotorDirection(String line) {
-    final parts = line.split(',');
-    if (parts.length != 6) return;
-    final axis = parts[0].trim().toUpperCase();
-    if (!_motors.any((motor) => _commandKey(motor.key).toUpperCase() == axis)) {
-      return;
-    }
-    final velocity = double.tryParse(parts[4].trim());
-    if (velocity != null && velocity != 0) {
-      _motorDirections[axis] = velocity > 0 ? 1 : -1;
-    }
-  }
-
-  Set<String> _expandedSensorKeys(String key) {
-    final normalized = key.trim().toUpperCase();
-    final keys = {normalized};
-    for (final motor in _motors.where(
-      (item) => _commandKey(item.key).toUpperCase() == normalized,
-    )) {
-      final direction = _motorDirections[normalized];
-      final configuredKeys = [motor.keySensorRight, motor.keySensorLeft]
-          .whereType<String>()
-          .where(
-            (sensorKey) => _sensors.any(
-              (sensor) =>
-                  (sensor.machineId == motor.systemMachineId ||
-                      sensor.machineId == null) &&
-                  sensor.key.trim().toUpperCase() ==
-                      sensorKey.trim().toUpperCase(),
-            ),
-          );
-      final singleConfiguredKey = configuredKeys.toSet();
-      final sensorKey = direction == null
-          ? singleConfiguredKey.length == 1
-                ? singleConfiguredKey.single
-                : null
-          : direction > 0
-          ? motor.keySensorRight
-          : motor.keySensorLeft;
-      if (sensorKey != null) {
-        keys
-          ..add(sensorKey.trim().toUpperCase())
-          ..add(_commandKey(sensorKey).toUpperCase());
-      }
-    }
-    return keys;
-  }
-
-  (String, bool)? _sensorSignal(String line) {
-    final normalizedLine = line.trim().toUpperCase();
-    final configuredSensors = [..._sensors]
-      ..sort((a, b) => b.key.trim().length.compareTo(a.key.trim().length));
-    for (final sensor in configuredSensors) {
-      final key = sensor.key.trim().toUpperCase();
-      if (key.isEmpty) continue;
-      if (normalizedLine == '${key}1') return (key, true);
-      if (normalizedLine == '${key}0') return (key, false);
-    }
-
-    final parts = line.split(',');
-    if (parts.length >= 4 && parts[0] == 'BC' && parts[1] == 'SENSOR') {
-      return (parts[2].trim(), _isActive(parts[3]));
-    }
-    if (parts.length >= 5 &&
-        parts[0] == 'BC' &&
-        parts[1] == 'EVT' &&
-        parts[2] == 'SENSOR') {
-      return (parts[3].trim(), true);
-    }
-    if (parts.length == 6 &&
-        parts[0].startsWith('BC') &&
-        _motors.any(
-          (motor) =>
-              _commandKey(motor.key).toUpperCase() ==
-              parts[0].trim().toUpperCase(),
-        )) {
-      final sensorValue = int.tryParse(parts[5].trim());
-      if (sensorValue != null) return (parts[0], sensorValue != 0);
-    }
-    return null;
-  }
-
-  bool _isActive(String value) {
-    final normalized = value.trim().toUpperCase();
-    return normalized == '1' ||
-        normalized == 'ON' ||
-        normalized == 'TRUE' ||
-        normalized == 'ACTIVE';
-  }
-
   void _failPending(Object error) {
     final finished = _groupFinished;
-    if (finished != null && !finished.isCompleted)
+    if (finished != null && !finished.isCompleted) {
       finished.completeError(error);
+    }
     _groupFinished = null;
     _pendingAxes = {};
     _pendingServos.clear();
@@ -743,8 +606,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       context: context,
       builder: (context) => _ProcessCreateDialog(
         machines: _machines,
-        allMachines: _allMachines,
-        sensors: _sensors,
+        mqttTopics: _mqttTopics.toList()..sort(),
       ),
     );
     if (draft == null) return;
@@ -752,8 +614,9 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
       id: DateTime.now().microsecondsSinceEpoch,
       name: draft.name,
       order: 0,
-      activationSensorId: draft.sensor?.id,
       machineId: draft.machine.id,
+      mqttTopic: draft.mqttTopic,
+      mqttExpectedMessage: draft.mqttExpectedMessage,
     );
     try {
       await GetIt.I<SystemConfigurationService>().saveProcessDefinition(
@@ -775,16 +638,30 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
           initialPlan: plan,
           machines: _machines,
           allMachines: _allMachines,
+          mqttTopics: _mqttTopics.toList()..sort(),
           motors: _motors,
           servos: _servos,
-          sensors: _sensors,
+          onRunProcess: (processId) {
+            if (!_hasExecutionTransport) {
+              _message('Conecta el serial o inicia la emulación.');
+              return;
+            }
+            if (_runningProcesses.contains(processId)) {
+              _message('El proceso ya está en cola o ejecutándose.');
+              return;
+            }
+            final currentPlan = _plans
+                .where((item) => item.process.id == processId)
+                .firstOrNull;
+            if (currentPlan != null) _queuePlan(currentPlan);
+          },
           onProcessChanged: (process) async {
             await GetIt.I<SystemConfigurationService>().saveProcessDefinition(
               process,
             );
             await _loadOptions();
           },
-          allowDelete: _peer.session.isMaster,
+          allowDelete: true,
           onChanged: _loadOptions,
         ),
       ),
@@ -792,8 +669,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
   }
 
   Future<void> _deleteProcess(_SavedPlan plan) async {
-    if (!_peer.session.isMaster ||
-        _runningProcesses.contains(plan.process.id)) {
+    if (_runningProcesses.contains(plan.process.id)) {
       return;
     }
     final confirmed = await showDialog<bool>(
@@ -874,14 +750,7 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
           ],
         ),
         const SizedBox(height: 16),
-        if (_peer.session.isMaster) _connectionControls(),
-        if (_peer.session.isSlave)
-          const Padding(
-            padding: EdgeInsets.only(bottom: 12),
-            child: Text(
-              'Los cambios se sincronizan con el maestro al guardarlos.',
-            ),
-          ),
+        _connectionControls(),
         if (_executionMessage != null)
           Padding(
             padding: const EdgeInsets.only(top: 8),
@@ -898,20 +767,27 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
             clipBehavior: Clip.antiAlias,
             child: ListTile(
               title: Text(plan.process.name),
+              subtitle: Text(
+                plan.process.mqttTopic == null
+                    ? 'Al conectar el serial'
+                    : 'MQTT · ${plan.process.mqttTopic} = '
+                          '${plan.process.mqttExpectedMessage}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
                     tooltip: _runningProcesses.contains(plan.process.id)
-                        ? 'Proceso en ejecución'
-                        : 'Iniciar proceso',
+                        ? 'Proceso en cola o en ejecución'
+                        : 'Ejecutar proceso',
                     onPressed:
-                        !_peer.session.isMaster ||
-                            !_hasExecutionTransport ||
-                            (plan.motors.isEmpty && plan.servos.isEmpty) ||
-                            _runningProcesses.contains(plan.process.id)
+                        !_hasExecutionTransport ||
+                            _runningProcesses.contains(plan.process.id) ||
+                            (plan.motors.isEmpty && plan.servos.isEmpty)
                         ? null
-                        : () => _startProcessManually(plan),
+                        : () => _queuePlan(plan),
                     icon: _runningProcesses.contains(plan.process.id)
                         ? const SizedBox(
                             width: 20,
@@ -920,16 +796,15 @@ class _ProcessProgrammingPageState extends State<ProcessProgrammingPage> {
                           )
                         : const Icon(Icons.play_arrow),
                   ),
-                  if (_peer.session.isMaster)
-                    IconButton(
-                      tooltip: _runningProcesses.contains(plan.process.id)
-                          ? 'No se puede eliminar mientras se ejecuta'
-                          : 'Eliminar proceso',
-                      onPressed: _runningProcesses.contains(plan.process.id)
-                          ? null
-                          : () => _deleteProcess(plan),
-                      icon: const Icon(Icons.delete_outline),
-                    ),
+                  IconButton(
+                    tooltip: _runningProcesses.contains(plan.process.id)
+                        ? 'No se puede eliminar mientras se ejecuta'
+                        : 'Eliminar proceso',
+                    onPressed: _runningProcesses.contains(plan.process.id)
+                        ? null
+                        : () => _deleteProcess(plan),
+                    icon: const Icon(Icons.delete_outline),
+                  ),
                   const Icon(Icons.chevron_right),
                 ],
               ),
@@ -1062,31 +937,27 @@ class _ProcessDraft {
   const _ProcessDraft({
     required this.name,
     required this.machine,
-    required this.sensor,
+    required this.mqttTopic,
+    required this.mqttExpectedMessage,
   });
 
   final String name;
   final SystemMachine machine;
-  final Sensor? sensor;
+  final String? mqttTopic;
+  final String? mqttExpectedMessage;
 }
 
-class _SensorChoice {
-  const _SensorChoice(this.sensor);
-
-  final Sensor? sensor;
-}
+enum _ProcessActivation { serial, mqtt }
 
 class _ProcessCreateDialog extends StatefulWidget {
   const _ProcessCreateDialog({
     required this.machines,
-    required this.allMachines,
-    required this.sensors,
+    required this.mqttTopics,
     this.initialProcess,
   });
 
   final List<SystemMachine> machines;
-  final List<SystemMachine> allMachines;
-  final List<Sensor> sensors;
+  final List<String> mqttTopics;
   final Process? initialProcess;
 
   @override
@@ -1095,8 +966,11 @@ class _ProcessCreateDialog extends StatefulWidget {
 
 class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
   final _name = TextEditingController();
+  final _topic = TextEditingController();
+  final _expectedMessage = TextEditingController();
   SystemMachine? _machine;
-  Sensor? _sensor;
+  String? _selectedTopic;
+  _ProcessActivation _activation = _ProcessActivation.serial;
 
   @override
   void initState() {
@@ -1108,139 +982,47 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
             .where((machine) => machine.id == process?.machineId)
             .firstOrNull ??
         widget.machines.firstOrNull;
-    _sensor = widget.sensors
-        .where((sensor) => sensor.id == process?.activationSensorId)
-        .firstOrNull;
+    _topic.text = process?.mqttTopic ?? '';
+    _expectedMessage.text = process?.mqttExpectedMessage ?? '';
+    if (process?.mqttTopic != null) {
+      _activation = _ProcessActivation.mqtt;
+    }
   }
 
   @override
   void dispose() {
     _name.dispose();
+    _topic.dispose();
+    _expectedMessage.dispose();
     super.dispose();
   }
 
   bool get _editing => widget.initialProcess != null;
 
-  String _sensorMachineName(Sensor sensor) {
-    final machine = widget.allMachines
-        .where((item) => item.id == sensor.machineId)
-        .firstOrNull;
-    return machine?.name ??
-        (sensor.machineId == null
-            ? 'Sin máquina'
-            : 'Máquina ${sensor.machineId}');
-  }
-
   void _submit() {
     final machine = _machine;
     final name = _name.text.trim();
-    final initial = widget.initialProcess;
     if (name.isEmpty || machine == null) return;
+    final mqttTopic = _activation == _ProcessActivation.mqtt
+        ? _topic.text.trim()
+        : null;
+    final mqttExpectedMessage = _activation == _ProcessActivation.mqtt
+        ? _expectedMessage.text
+        : null;
+    if (_activation == _ProcessActivation.mqtt &&
+        (mqttTopic == null ||
+            mqttTopic.isEmpty ||
+            mqttExpectedMessage!.isEmpty)) {
+      return;
+    }
     Navigator.of(context).pop(
       _ProcessDraft(
         name: name,
-        machine: initial == null ? machine : _machine!,
-        sensor: _sensor,
+        machine: machine,
+        mqttTopic: mqttTopic,
+        mqttExpectedMessage: mqttExpectedMessage,
       ),
     );
-  }
-
-  Future<void> _selectSensor() async {
-    final search = TextEditingController();
-    _SensorChoice? choice;
-    try {
-      choice = await showDialog<_SensorChoice>(
-        context: context,
-        builder: (context) => StatefulBuilder(
-          builder: (context, setDialogState) {
-            final query = search.text.trim().toLowerCase();
-            final sensors = widget.sensors
-                .where(
-                  (sensor) =>
-                      sensor.name.toLowerCase().contains(query) ||
-                      sensor.key.toLowerCase().contains(query) ||
-                      _sensorMachineName(sensor).toLowerCase().contains(query),
-                )
-                .toList();
-            return AlertDialog(
-              title: const Text('Activar proceso por sensor'),
-              content: SizedBox(
-                width: 440,
-                height: 380,
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: search,
-                      autofocus: true,
-                      onChanged: (_) => setDialogState(() {}),
-                      decoration: const InputDecoration(
-                        labelText: 'Buscar sensor',
-                        hintText: 'Nombre o clave',
-                        prefixIcon: Icon(Icons.search),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Expanded(
-                      child: ListView(
-                        children: [
-                          ListTile(
-                            leading: const Icon(Icons.usb),
-                            title: const Text('Al conectar el serial'),
-                            selected: _sensor == null,
-                            trailing: _sensor == null
-                                ? const Icon(Icons.check)
-                                : null,
-                            onTap: () => Navigator.of(
-                              context,
-                            ).pop(const _SensorChoice(null)),
-                          ),
-                          const Divider(height: 1),
-                          if (sensors.isEmpty)
-                            const Padding(
-                              padding: EdgeInsets.all(16),
-                              child: Text('No hay sensores que coincidan.'),
-                            ),
-                          for (final sensor in sensors)
-                            ListTile(
-                              leading: const Icon(
-                                Icons.sensors,
-                                color: Colors.blue,
-                              ),
-                              title: Text(sensor.name),
-                              subtitle: Text(
-                                '${_sensorMachineName(sensor)} · Clave: ${sensor.key} · '
-                                'evento: ${sensor.key}1',
-                              ),
-                              selected: _sensor?.id == sensor.id,
-                              trailing: _sensor?.id == sensor.id
-                                  ? const Icon(Icons.check)
-                                  : null,
-                              onTap: () => Navigator.of(
-                                context,
-                              ).pop(_SensorChoice(sensor)),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Cancelar'),
-                ),
-              ],
-            );
-          },
-        ),
-      );
-    } finally {
-      search.dispose();
-    }
-    if (!mounted || choice == null) return;
-    setState(() => _sensor = choice!.sensor);
   }
 
   @override
@@ -1281,39 +1063,75 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
                   ? null
                   : (value) => setState(() {
                       _machine = value;
-                      _sensor = null;
                     }),
             ),
             const SizedBox(height: 12),
-            InputDecorator(
+            DropdownButtonFormField<_ProcessActivation>(
+              initialValue: _activation,
               decoration: const InputDecoration(
-                labelText: 'Inicio del proceso',
-                helperText:
-                    'Al conectar el serial o cuando el sensor envíe su clave + 1.',
+                labelText: 'Activar proceso cuando',
                 border: OutlineInputBorder(),
-                suffixIcon: Icon(Icons.arrow_drop_down),
               ),
-              child: InkWell(
-                onTap: _machine == null ? null : _selectSensor,
-                child: Row(
-                  children: [
-                    Icon(
-                      _sensor == null ? Icons.usb : Icons.sensors,
-                      color: _sensor == null ? null : Colors.blue,
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _sensor == null
-                            ? 'Al conectar el serial'
-                            : '${_sensor!.name} · ${_sensor!.key} · ${_sensorMachineName(_sensor!)}',
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                  ],
+              items: const [
+                DropdownMenuItem(
+                  value: _ProcessActivation.serial,
+                  child: Text('Al conectar el serial'),
+                ),
+                DropdownMenuItem(
+                  value: _ProcessActivation.mqtt,
+                  child: Text('Al recibir un mensaje MQTT'),
+                ),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => _activation = value);
+              },
+            ),
+            if (_activation == _ProcessActivation.mqtt) ...[
+              const SizedBox(height: 12),
+              if (widget.mqttTopics.isNotEmpty) ...[
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedTopic,
+                  decoration: const InputDecoration(
+                    labelText: 'Topics MQTT recibidos',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: widget.mqttTopics
+                      .map(
+                        (topic) =>
+                            DropdownMenuItem(value: topic, child: Text(topic)),
+                      )
+                      .toList(),
+                  onChanged: (topic) {
+                    if (topic != null) {
+                      setState(() {
+                        _selectedTopic = topic;
+                        _topic.text = topic;
+                      });
+                    }
+                  },
+                ),
+                const SizedBox(height: 12),
+              ],
+              TextField(
+                controller: _topic,
+                onChanged: (_) => setState(() => _selectedTopic = null),
+                decoration: const InputDecoration(
+                  labelText: 'Topic MQTT (también puedes escribirlo)',
+                  hintText: 'maquina/entrada',
+                  border: OutlineInputBorder(),
                 ),
               ),
-            ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _expectedMessage,
+                onChanged: (_) => setState(() {}),
+                decoration: const InputDecoration(
+                  labelText: 'Texto esperado',
+                  hintText: 'INICIAR',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -1324,7 +1142,12 @@ class _ProcessCreateDialogState extends State<_ProcessCreateDialog> {
         child: const Text('Cancelar'),
       ),
       FilledButton(
-        onPressed: _name.text.trim().isNotEmpty && _machine != null
+        onPressed:
+            _name.text.trim().isNotEmpty &&
+                _machine != null &&
+                (_activation == _ProcessActivation.serial ||
+                    (_topic.text.trim().isNotEmpty &&
+                        _expectedMessage.text.isNotEmpty))
             ? _submit
             : null,
         child: Text(_editing ? 'Guardar' : 'Crear'),
@@ -1338,9 +1161,10 @@ class _ProcessDetailPage extends StatefulWidget {
     required this.initialPlan,
     required this.machines,
     required this.allMachines,
+    required this.mqttTopics,
     required this.motors,
     required this.servos,
-    required this.sensors,
+    required this.onRunProcess,
     required this.onProcessChanged,
     required this.allowDelete,
     required this.onChanged,
@@ -1349,9 +1173,10 @@ class _ProcessDetailPage extends StatefulWidget {
   final _SavedPlan initialPlan;
   final List<SystemMachine> machines;
   final List<SystemMachine> allMachines;
+  final List<String> mqttTopics;
   final List<Motor> motors;
   final List<Servo> servos;
-  final List<Sensor> sensors;
+  final void Function(int processId) onRunProcess;
   final Future<void> Function(Process process) onProcessChanged;
   final bool allowDelete;
   final Future<void> Function() onChanged;
@@ -1391,8 +1216,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       context: context,
       builder: (context) => _ProcessCreateDialog(
         machines: widget.machines,
-        allMachines: widget.allMachines,
-        sensors: widget.sensors,
+        mqttTopics: widget.mqttTopics,
         initialProcess: _plan.process,
       ),
     );
@@ -1401,8 +1225,9 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       id: _plan.process.id,
       name: draft.name,
       order: _plan.process.order,
-      activationSensorId: draft.sensor?.id,
       machineId: _plan.process.machineId,
+      mqttTopic: draft.mqttTopic,
+      mqttExpectedMessage: draft.mqttExpectedMessage,
     );
     setState(() => _saving = true);
     try {
@@ -1443,8 +1268,7 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
         existingServos: _plan.servos,
         editingMotor: editingMotor,
         editingServo: editingServo,
-        allowTypeChange:
-            _peerIsMaster || (editingMotor == null && editingServo == null),
+        allowTypeChange: true,
       ),
     );
     if (action == null) return;
@@ -1488,8 +1312,6 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
       isEdit: editingMotor != null || editingServo != null,
     );
   }
-
-  bool get _peerIsMaster => GetIt.I<PeerRepository>().session.isMaster;
 
   Future<void> _deleteMovement({
     ProcessMotors? motor,
@@ -1622,9 +1444,6 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
         .where((item) => item.id == _machineId)
         .firstOrNull
         ?.name;
-    final trigger = widget.sensors
-        .where((item) => item.id == _plan.process.activationSensorId)
-        .firstOrNull;
     return Scaffold(
       appBar: AppBar(
         title: Text(_plan.process.name),
@@ -1644,12 +1463,20 @@ class _ProcessDetailPageState extends State<_ProcessDetailPage> {
               leading: const Icon(Icons.precision_manufacturing),
               title: Text(machineName ?? 'Máquina no disponible'),
               subtitle: Text(
-                _plan.process.activationSensorId == null
+                _plan.process.mqttTopic == null
                     ? 'Se inicia al conectar el serial'
-                    : 'Se inicia al activar ${trigger?.name ?? 'sensor'}'
-                          '${trigger == null ? '' : ' · ${trigger.key}'}',
+                    : 'Se inicia con MQTT: ${_plan.process.mqttTopic} = '
+                          '${_plan.process.mqttExpectedMessage}',
               ),
             ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: _plan.motors.isEmpty && _plan.servos.isEmpty
+                ? null
+                : () => widget.onRunProcess(_plan.process.id),
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Ejecutar proceso'),
           ),
           const SizedBox(height: 20),
           Row(
@@ -2006,8 +1833,9 @@ class _AddMovementDialogState extends State<_AddMovementDialog> {
                     .toList(),
                 onChanged: (value) => setState(() {
                   _motor = value;
-                  if (value != null)
+                  if (value != null) {
                     _speed.text = value.speed.round().toString();
+                  }
                 }),
               )
             else

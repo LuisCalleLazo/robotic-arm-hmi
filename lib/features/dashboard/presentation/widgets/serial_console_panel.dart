@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
+import 'communication_snackbar.dart';
 import 'scara_arm_hmi_panel.dart';
 
 class SerialConsolePanel extends StatefulWidget {
@@ -37,9 +38,13 @@ class _SerialConsolePanelState extends State<SerialConsolePanel> {
       if (mounted) _commandController.clear();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
+      showCommunicationSnackBar(
         context,
-      ).showSnackBar(SnackBar(content: Text('No se pudo enviar: $error')));
+        title: 'ERROR DE ENVÍO SERIAL',
+        message: '$error',
+        icon: Icons.error_outline,
+        isError: true,
+      );
     }
   }
 

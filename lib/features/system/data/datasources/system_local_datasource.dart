@@ -103,8 +103,9 @@ class SystemLocalDataSource {
             id: row.id,
             name: row.name,
             order: row.order,
-            activationSensorId: row.activationSensorId,
             machineId: row.machineId,
+            mqttTopic: row.mqttTopic,
+            mqttExpectedMessage: row.mqttExpectedMessage,
           ),
         )
         .toList();
@@ -120,7 +121,9 @@ class SystemLocalDataSource {
             name: process.name,
             order: process.order,
             machineId: Value(process.machineId),
-            activationSensorId: Value(process.activationSensorId),
+            activationSensorId: const Value(null),
+            mqttTopic: Value(process.mqttTopic),
+            mqttExpectedMessage: Value(process.mqttExpectedMessage),
           ),
         );
   }
@@ -226,6 +229,11 @@ class SystemLocalDataSource {
         );
   }
 
+  Future<void> deleteMotor(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await (db.delete(db.motors)..where((table) => table.id.equals(id))).go();
+  }
+
   Future<List<Servo>> getServos() async {
     final db = await _databaseManager.getDatabase();
     final rows = await db.select(db.servos).get();
@@ -253,6 +261,11 @@ class SystemLocalDataSource {
             maxOpen: servo.maxOpen,
           ),
         );
+  }
+
+  Future<void> deleteServo(int id) async {
+    final db = await _databaseManager.getDatabase();
+    await (db.delete(db.servos)..where((table) => table.id.equals(id))).go();
   }
 
   Future<List<system.ProcessMotors>> getProcessMotors(int processId) async {

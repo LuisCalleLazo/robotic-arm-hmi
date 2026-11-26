@@ -1,11 +1,6 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
-import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
-import '../../../peer_to_peer/domain/entities/peer_role.dart';
-import '../../../peer_to_peer/domain/entities/peer_session.dart';
 import '../../domain/entities/machine_configuration.dart';
 import '../../domain/entities/motor.dart';
 import '../../domain/entities/process.dart';
@@ -35,38 +30,16 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
   List<Process> _processes = const [];
   SystemMachine? _selected;
   bool _loading = true;
-  StreamSubscription<PeerSession>? _peerSubscription;
-  PeerRole? _loadedRole;
 
   SystemRepository get _repository => GetIt.I<SystemRepository>();
-  bool get _isSlave => GetIt.I<PeerRepository>().session.isSlave;
 
   @override
   void initState() {
     super.initState();
-    final peer = GetIt.I<PeerRepository>();
-    _loadedRole = peer.session.role;
-    _peerSubscription = peer.sessionStream.listen((session) {
-      if (session.role == _loadedRole) return;
-      _loadedRole = session.role;
-      _reload();
-    });
     _reload();
   }
 
-  @override
-  void dispose() {
-    _peerSubscription?.cancel();
-    super.dispose();
-  }
-
   Future<void> _reload() async {
-    if (_isSlave) {
-      _applySlaveConfiguration(
-        GetIt.I<SystemConfigurationService>().localSlaveConfiguration,
-      );
-      return;
-    }
     try {
       final machines = await _repository.getMachines();
       final motors = await _repository.getMotors();
@@ -104,35 +77,12 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
     }
   }
 
-  void _applySlaveConfiguration(MachineConfiguration? configuration) {
-    if (!mounted) return;
-    final machine = configuration?.machine;
-    setState(() {
-      _allMachines = configuration == null
-          ? const []
-          : [configuration.machine, ...configuration.components];
-      _machines = machine == null ? const [] : [machine];
-      _motors = configuration?.motors ?? const [];
-      _servos = configuration?.servos ?? const [];
-      _sensors = configuration?.sensors ?? const [];
-      _processMotors = const [];
-      _processServos = const [];
-      _processes = const [];
-      _selected = machine;
-      _loading = false;
-    });
-  }
-
   Future<void> _openEditor([SystemMachine? machine]) async {
-    final slaveConfiguration = _isSlave
-        ? GetIt.I<SystemConfigurationService>().localSlaveConfiguration
-        : null;
     final components = machine == null
         ? <SystemMachine>[]
-        : (slaveConfiguration?.components ??
-              (await _repository.getMachines())
-                  .where((item) => item.parentMachineId == machine.id)
-                  .toList());
+        : (await _repository.getMachines())
+              .where((item) => item.parentMachineId == machine.id)
+              .toList();
     final result = await showDialog<MachineConfiguration>(
       context: context,
       builder: (_) => _MachineEditorDialog(
@@ -140,38 +90,29 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
         components: components,
         motors: machine == null
             ? const []
-            : (slaveConfiguration?.motors ??
-                  _motors
-                      .where((item) => item.systemMachineId == machine.id)
-                      .toList()),
+            : _motors
+                  .where((item) => item.systemMachineId == machine.id)
+                  .toList(),
         servos: machine == null
             ? const []
-            : (slaveConfiguration?.servos ??
-                  _servos
-                      .where((item) => item.machineId == machine.id)
-                      .toList()),
+            : _servos.where((item) => item.machineId == machine.id).toList(),
         sensors: machine == null
             ? const []
-            : (slaveConfiguration?.sensors ??
-                  _sensors
-                      .where(
-                        (sensor) =>
-                            sensor.machineId == machine.id ||
-                            sensor.machineId == null,
-                      )
-                      .toList()),
-        allowDelete: !_isSlave,
+            : _sensors
+                  .where(
+                    (sensor) =>
+                        sensor.machineId == machine.id ||
+                        sensor.machineId == null,
+                  )
+                  .toList(),
+        allowDelete: true,
       ),
     );
     if (result == null) return;
     try {
       await GetIt.I<SystemConfigurationService>().saveMachine(result);
       _message('Máquina guardada correctamente.');
-      if (_isSlave) {
-        _applySlaveConfiguration(result);
-      } else {
-        await _reload();
-      }
+      await _reload();
     } catch (error) {
       _message('$error');
     }
@@ -199,12 +140,6 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
               (item) => _servos
                   .where((servo) => servo.id == item.servoId)
                   .any((servo) => ids.contains(servo.machineId)),
-            ) ||
-        _sensors.any((item) => ids.contains(item.machineId)) &&
-            _processes.any(
-              (process) => _sensors
-                  .where((sensor) => sensor.id == process.activationSensorId)
-                  .any((sensor) => ids.contains(sensor.machineId)),
             );
   }
 
@@ -246,9 +181,7 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
         title: const Text('Máquinas'),
         actions: [
           FilledButton.icon(
-            onPressed: _isSlave && _machines.isNotEmpty
-                ? null
-                : () => _openEditor(),
+            onPressed: () => _openEditor(),
             icon: const Icon(Icons.add),
             label: const Text('Nueva máquina'),
           ),
@@ -309,16 +242,15 @@ class _MachineCreationPageState extends State<MachineCreationPage> {
                             onPressed: () => _openEditor(selected),
                             icon: const Icon(Icons.edit),
                           ),
-                          if (!_isSlave)
-                            IconButton(
-                              tooltip: _isLinked(selected)
-                                  ? 'Enlazada a procesos'
-                                  : 'Eliminar',
-                              onPressed: _isLinked(selected)
-                                  ? null
-                                  : () => _delete(selected),
-                              icon: const Icon(Icons.delete_outline),
-                            ),
+                          IconButton(
+                            tooltip: _isLinked(selected)
+                                ? 'Enlazada a procesos'
+                                : 'Eliminar',
+                            onPressed: _isLinked(selected)
+                                ? null
+                                : () => _delete(selected),
+                            icon: const Icon(Icons.delete_outline),
+                          ),
                         ],
                       ),
                       Text('Componentes de la máquina'),

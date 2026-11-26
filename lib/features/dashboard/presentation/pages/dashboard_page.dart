@@ -1,16 +1,17 @@
-import 'dart:math' as math;
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:get_it/get_it.dart';
 
-import '../../../peer_to_peer/domain/entities/peer_entities.dart';
-import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
-import '../../../peer_to_peer/presentation/cubit/peer_cubit.dart';
-import '../../../peer_to_peer/presentation/widgets/peer_status_badge.dart';
+import '../../../mqtt/data/mqtt_connection_service.dart';
+import '../../../mqtt/domain/entities/mqtt_incoming_message.dart';
+import '../../../mqtt/domain/entities/mqtt_connection_state.dart';
+import '../../../mqtt/presentation/pages/mqtt_landing_page.dart';
 import '../../../serial_connection/presentation/bloc/connection_bloc.dart';
 import '../../../serial_connection/presentation/pages/connection_page.dart';
 import '../../../telemetry/presentation/cubit/telemetry_cubit.dart';
+import '../widgets/communication_snackbar.dart';
 import '../widgets/scara_arm_hmi_panel.dart';
 import '../widgets/serial_console_panel.dart';
 import '../widgets/system_overview_panel.dart';
@@ -25,45 +26,108 @@ class DashboardPage extends StatefulWidget {
 }
 
 class _DashboardPageState extends State<DashboardPage> {
-  bool _showLogs = false;
   _SystemView _systemView = _SystemView.arm;
+  late final StreamSubscription<MqttIncomingMessage> _mqttMessages;
+  late final StreamSubscription<TelemetryLogEntry> _serialMessages;
+  Timer? _snackbarTimer;
+  ({String title, String message, IconData icon})? _pendingMessage;
+  ({String title, String message, IconData icon})? _lastMessage;
+  String? _lastSerialMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _mqttMessages = GetIt.I<MqttConnectionService>().messages.listen(
+      _showMqttMessage,
+    );
+    _serialMessages = GetIt.I<TelemetryCubit>().lineEvents.listen(
+      _showSerialMessage,
+    );
+  }
+
+  @override
+  void dispose() {
+    _mqttMessages.cancel();
+    _serialMessages.cancel();
+    _snackbarTimer?.cancel();
+    super.dispose();
+  }
+
+  void _showMqttMessage(MqttIncomingMessage message) {
+    _queueMessage(
+      title: 'MQTT · ${message.topic}',
+      message: message.payload,
+      icon: Icons.cloud_download_outlined,
+    );
+  }
+
+  void _showSerialMessage(TelemetryLogEntry entry) {
+    final key = '${entry.source.name}:${entry.line}';
+    if (key == _lastSerialMessage) return;
+    _lastSerialMessage = key;
+    final sent = entry.source == TelemetrySource.serialSent;
+    final simulated = entry.source == TelemetrySource.simulated;
+    _queueMessage(
+      title: sent
+          ? 'SERIAL · ENVIADO'
+          : simulated
+          ? 'SIMULACIÓN · RECIBIDO'
+          : 'SERIAL · RECIBIDO',
+      message: entry.line,
+      icon: sent ? Icons.north_east : Icons.south_west,
+    );
+  }
+
+  void _queueMessage({
+    required String title,
+    required String message,
+    required IconData icon,
+  }) {
+    _pendingMessage = (title: title, message: message, icon: icon);
+    if (_snackbarTimer != null) return;
+    _snackbarTimer = Timer(const Duration(milliseconds: 300), () {
+      _snackbarTimer = null;
+      final pending = _pendingMessage;
+      _pendingMessage = null;
+      if (!mounted || pending == null) return;
+      _lastMessage = pending;
+      _displayMessage(pending);
+    });
+  }
+
+  void _displayMessage(({String title, String message, IconData icon}) value) {
+    showCommunicationSnackBar(
+      context,
+      title: value.title,
+      message: value.message,
+      icon: value.icon,
+    );
+  }
+
+  void _openSerialConsole({required bool canSend}) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => Dialog(
+        child: SizedBox(
+          width: 560,
+          height: 420,
+          child: SerialConsolePanel(
+            onClose: () => Navigator.of(dialogContext).pop(),
+            onSend: _sendCommand,
+            canSend: canSend,
+          ),
+        ),
+      ),
+    );
+  }
 
   Future<void> _sendCommand(String command, {String? simulatedCommand}) async {
     final trimmedCommand = command.trim();
     if (trimmedCommand.isEmpty) return;
     final telemetry = context.read<TelemetryCubit>();
-    final peer = GetIt.I<PeerRepository>();
-    if (peer.session.isSlave) {
-      if (!peer.session.isActive) {
-        throw StateError('Conéctate al servidor maestro para enviar comandos.');
-      }
-      if (_isSensorSignal(trimmedCommand)) {
-        await peer.send(
-          PeerMessage(
-            type: PeerMessageType.telemetry,
-            payload: {'kind': 'serial_line', 'line': trimmedCommand},
-          ),
-        );
-        telemetry.recordSent(trimmedCommand);
-        return;
-      }
-      if (!peer.session.permission.canSendCommands) {
-        throw StateError(
-          'El maestro no te ha dado permiso para enviar comandos.',
-        );
-      }
-      await peer.send(
-        PeerMessage(
-          type: PeerMessageType.command,
-          payload: {'kind': 'serial_command', 'line': trimmedCommand},
-        ),
-      );
-      telemetry.recordSent(trimmedCommand);
-      return;
-    }
     if (telemetry.state.isSimulating) {
       if (_isSensorSignal(trimmedCommand)) {
-        telemetry.ingestPeerLine(trimmedCommand);
+        telemetry.ingestSimulatedLine(trimmedCommand);
         return;
       }
       telemetry.recordSent(trimmedCommand);
@@ -84,30 +148,22 @@ class _DashboardPageState extends State<DashboardPage> {
     final connection = context.watch<ConnectionBloc>().state;
     final telemetry = context.watch<TelemetryCubit>().state;
     final simulation = telemetry.isSimulating;
+    final mqtt = GetIt.I<MqttConnectionService>();
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Sistema'),
         actions: [
-          BlocBuilder<PeerCubit, PeerState>(
-            bloc: GetIt.I<PeerCubit>(),
-            builder: (context, peerState) {
-              final session = peerState.session;
-              final serialConnected = session.isSlave
-                  ? session.isActive
-                  : connection.isConnected;
-              final label = simulation
-                  ? 'Simulado'
-                  : session.isSlave
-                  ? serialConnected
-                        ? 'Serial compartido'
-                        : 'Maestro desconectado'
-                  : serialConnected
-                  ? '${connection.selectedPort} · ${connection.baudRate} baud'
-                  : 'Serial desconectado';
+          StreamBuilder<BrokerConnectionState>(
+            stream: mqtt.states,
+            initialData: mqtt.state,
+            builder: (context, connectionSnapshot) {
+              final label = connectionSnapshot.data?.isConnected == true
+                  ? 'MQTT · ${connectionSnapshot.data?.host}'
+                  : 'MQTT desconectado';
               final color = simulation
                   ? Colors.lightBlue
-                  : serialConnected
+                  : connectionSnapshot.data?.isConnected == true
                   ? Colors.green
                   : Theme.of(context).colorScheme.onSurfaceVariant;
               return Chip(
@@ -117,7 +173,18 @@ class _DashboardPageState extends State<DashboardPage> {
             },
           ),
           const SizedBox(width: 8),
-          const PeerStatusBadge(),
+          IconButton(
+            tooltip: 'Conexión MQTT',
+            icon: const Icon(Icons.hub_outlined),
+            onPressed: () => showMqttConnectionDialog(context, mqtt),
+          ),
+          IconButton(
+            tooltip: 'Mostrar último mensaje',
+            icon: const Icon(Icons.notifications_active_outlined),
+            onPressed: _lastMessage == null
+                ? null
+                : () => _displayMessage(_lastMessage!),
+          ),
           IconButton(
             tooltip: 'Configurar conexión serial',
             icon: const Icon(Icons.usb),
@@ -128,24 +195,22 @@ class _DashboardPageState extends State<DashboardPage> {
               ),
             ),
           ),
+          IconButton(
+            tooltip: 'Consola serial',
+            icon: const Icon(Icons.terminal),
+            onPressed: () => _openSerialConsole(
+              canSend: simulation || connection.isConnected,
+            ),
+          ),
           const SizedBox(width: 8),
         ],
       ),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1440),
-          child: BlocBuilder<PeerCubit, PeerState>(
-            bloc: GetIt.I<PeerCubit>(),
-            builder: (context, peerState) {
-              final session = peerState.session;
-              final canSend =
-                  simulation ||
-                  (session.isSlave
-                      ? session.isActive && session.permission.canSendCommands
-                      : connection.isConnected);
-              final serialConnected = session.isSlave
-                  ? session.isActive
-                  : connection.isConnected;
+          child: Builder(
+            builder: (context) {
+              final canSend = simulation || connection.isConnected;
               return Column(
                 children: [
                   Padding(
@@ -175,11 +240,9 @@ class _DashboardPageState extends State<DashboardPage> {
                         ScaraArmHmiPanel(
                           canSendCommands: canSend,
                           simulating: simulation,
-                          serialConnected: serialConnected,
-                          connectionLabel: session.isSlave
-                              ? 'Serial compartido'
-                              : connection.isConnected
-                              ? 'Conectado'
+                          serialConnected: connection.isConnected,
+                          connectionLabel: connection.isConnected
+                              ? '${connection.selectedPort} · ${connection.baudRate} baud'
                               : 'Desconectado',
                           telemetry: context.read<TelemetryCubit>(),
                           onCommand: _sendCommand,
@@ -187,7 +250,7 @@ class _DashboardPageState extends State<DashboardPage> {
                         SystemOverviewPanel(
                           key: ValueKey(_systemView),
                           canSendCommands: canSend,
-                          serialConnected: serialConnected,
+                          serialConnected: connection.isConnected,
                           simulating: simulation,
                           telemetry: context.read<TelemetryCubit>(),
                           onCommand: (command) => _sendCommand(command),
@@ -201,35 +264,6 @@ class _DashboardPageState extends State<DashboardPage> {
           ),
         ),
       ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => setState(() => _showLogs = !_showLogs),
-        icon: Icon(_showLogs ? Icons.close : Icons.terminal),
-        label: Text(_showLogs ? 'Cerrar logs' : 'Logs seriales'),
-      ),
-      bottomSheet: _showLogs
-          ? Align(
-              alignment: Alignment.bottomRight,
-              child: LayoutBuilder(
-                builder: (context, constraints) => SizedBox(
-                  height: math.min(420, MediaQuery.sizeOf(context).height * .6),
-                  width: math.min(560, constraints.maxWidth),
-                  child: SerialConsolePanel(
-                    onClose: () => setState(() => _showLogs = false),
-                    onSend: _sendCommand,
-                    canSend:
-                        simulation ||
-                        (GetIt.I<PeerRepository>().session.isSlave
-                            ? GetIt.I<PeerRepository>().session.isActive &&
-                                  GetIt.I<PeerRepository>()
-                                      .session
-                                      .permission
-                                      .canSendCommands
-                            : connection.isConnected),
-                  ),
-                ),
-              ),
-            )
-          : null,
     );
   }
 }

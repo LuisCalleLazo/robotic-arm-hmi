@@ -3,9 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
-import '../../../peer_to_peer/domain/entities/peer_role.dart';
-import '../../../peer_to_peer/domain/entities/peer_session.dart';
-import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
 import '../../../system/domain/entities/motor.dart';
 import '../../../system/domain/entities/process.dart';
 import '../../../system/domain/entities/process_motors.dart';
@@ -69,7 +66,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   final Map<String, _MovementTelemetry> _servoTelemetry = {};
   final Map<int, _HmiProcessPlan> _processPlans = {};
   final Set<int> _knownPositions = {};
-  final Set<int> _scheduledProcessIds = {};
   final Map<int, int> _lastDirections = {};
   final Set<String> _activeSensors = {};
   final TextEditingController _servoAngleController = TextEditingController(
@@ -87,19 +83,10 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   SystemMachine? _selectedMachine;
   Servo? _selectedServo;
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
-  StreamSubscription<PeerSession>? _peerSubscription;
   StreamSubscription<void>? _sensorCatalogSubscription;
-  PeerRole? _loadedRole;
   Timer? _animationTimer;
   final Map<int, _PositionAnimation> _animations = {};
-  final Set<String> _pendingProcessAxes = {};
-  final Map<String, double> _pendingProcessServos = {};
-  Completer<void>? _processGroupFinished;
-  Future<void> _processQueue = Future<void>.value();
-  int? _selectedProcessId;
   int _configurationGeneration = 0;
-  bool _processRunning = false;
-  String? _processMessage;
   bool _telemetryRequested = false;
   bool _loading = true;
   bool _paused = false;
@@ -112,19 +99,9 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   void initState() {
     super.initState();
     _lineSubscription = widget.telemetry.lineEvents.listen(_onLine);
-    final peer = GetIt.I<PeerRepository>();
-    _loadedRole = peer.session.role;
-    _peerSubscription = peer.sessionStream.listen((session) {
-      if (session.role == _loadedRole) return;
-      _loadedRole = session.role;
-      if (mounted) setState(() => _loading = true);
-      _loadConfiguration();
-    });
     _sensorCatalogSubscription = GetIt.I<SystemConfigurationService>()
         .sensorCatalogChanges
-        .listen((_) {
-          if (peer.session.isSlave) _loadConfiguration();
-        });
+        .listen((_) => _loadConfiguration());
     _loadConfiguration();
     WidgetsBinding.instance.addPostFrameCallback((_) => _ensureTelemetry());
   }
@@ -135,7 +112,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     if (oldWidget.telemetry != widget.telemetry) {
       _lineSubscription?.cancel();
       _sensorCatalogSubscription?.cancel();
-      _peerSubscription?.cancel();
       _lineSubscription = widget.telemetry.lineEvents.listen(_onLine);
     }
     if (oldWidget.serialConnected != widget.serialConnected ||
@@ -145,10 +121,8 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     if ((oldWidget.serialConnected && !widget.serialConnected) ||
         (oldWidget.simulating && !widget.simulating)) {
       _cancelAnimations();
-      _failPendingProcess(StateError('Se perdió la conexión con el serial.'));
       if (mounted) {
         setState(() {
-          _processRunning = false;
           _machineState = 'Desconectado';
         });
       }
@@ -159,7 +133,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   void dispose() {
     _lineSubscription?.cancel();
     _animationTimer?.cancel();
-    _failPendingProcess(StateError('Se cerró la vista HMI.'));
     for (final controller in _stepControllers.values) {
       controller.dispose();
     }
@@ -174,51 +147,19 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
   Future<void> _loadConfiguration() async {
     final generation = ++_configurationGeneration;
     try {
-      final peer = GetIt.I<PeerRepository>();
-      late final List<SystemMachine> machines;
-      late final List<Motor> motors;
-      late final List<Servo> servos;
-      late final List<Sensor> sensors;
-      late final List<Process> processes;
+      final repository = GetIt.I<SystemRepository>();
+      final machines = await repository.getMachines();
+      final motors = await repository.getMotors();
+      final servos = await repository.getServos();
+      final sensors = await repository.getSensors();
+      final processes = await repository.getProcesses();
       final processPlans = <int, _HmiProcessPlan>{};
-      if (peer.session.isSlave) {
-        final configuration =
-            GetIt.I<SystemConfigurationService>().localSlaveConfiguration;
-        if (configuration == null) {
-          machines = const [];
-          motors = const [];
-          servos = const [];
-          sensors = const [];
-          processes = const [];
-        } else {
-          machines = [configuration.machine, ...configuration.components];
-          motors = configuration.motors;
-          servos = configuration.servos;
-          sensors = GetIt.I<SystemConfigurationService>().sharedSensors;
-          processes = GetIt.I<SystemConfigurationService>().localSlaveProcesses;
-        }
-        final service = GetIt.I<SystemConfigurationService>();
-        for (final process in processes) {
-          processPlans[process.id] = _HmiProcessPlan(
-            process: process,
-            motors: service.localSlaveProcessMotors(process.id),
-            servos: service.localSlaveProcessServos(process.id),
-          );
-        }
-      } else {
-        final repository = GetIt.I<SystemRepository>();
-        machines = await repository.getMachines();
-        motors = await repository.getMotors();
-        servos = await repository.getServos();
-        sensors = await repository.getSensors();
-        processes = await repository.getProcesses();
-        for (final process in processes) {
-          processPlans[process.id] = _HmiProcessPlan(
-            process: process,
-            motors: await repository.getProcessMotors(process.id),
-            servos: await repository.getProcessServos(process.id),
-          );
-        }
+      for (final process in processes) {
+        processPlans[process.id] = _HmiProcessPlan(
+          process: process,
+          motors: await repository.getProcessMotors(process.id),
+          servos: await repository.getProcessServos(process.id),
+        );
       }
 
       final armMachines = machines
@@ -248,7 +189,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
           ..clear()
           ..addAll(processPlans);
         _selectedMachine = candidates.isEmpty ? null : candidates.first;
-        _selectedProcessId = null;
         _loading = false;
       });
       _selectMachine(candidates.isEmpty ? null : candidates.first);
@@ -288,13 +228,9 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
               sensor.machineId == null || machineIds.contains(sensor.machineId),
         )
         .toList();
-    final processPlans = _plansForMachine(machine);
     final previousSelections = Map<_ArmAxis, int?>.from(_selectedMotors);
     setState(() {
       _selectedMachine = machine;
-      if (processPlans.every((plan) => plan.process.id != _selectedProcessId)) {
-        _selectedProcessId = processPlans.firstOrNull?.process.id;
-      }
       _selectedServo = servos.isEmpty ? null : servos.first;
       _activeSensors.removeWhere(
         (key) => sensors.every((sensor) => sensor.key.toUpperCase() != key),
@@ -402,18 +338,8 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     }).toList()..sort((a, b) => a.process.name.compareTo(b.process.name));
   }
 
-  _HmiProcessPlan? get _selectedPlan {
-    for (final plan in _plansForMachine(_selectedMachine)) {
-      if (plan.process.id == _selectedProcessId) return plan;
-    }
-    return null;
-  }
-
-  void _ensureTelemetry({bool force = false}) {
-    if (_telemetryRequested ||
-        widget.simulating ||
-        !widget.serialConnected ||
-        (!force && !GetIt.I<PeerRepository>().session.isMaster)) {
+  void _ensureTelemetry() {
+    if (_telemetryRequested || widget.simulating || !widget.serialConnected) {
       return;
     }
     _telemetryRequested = true;
@@ -426,242 +352,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         if (mounted) _notify('No se pudo activar la telemetría: $error');
       }
     }());
-  }
-
-  Future<void> _runSelectedProcess() async {
-    final plan = _selectedPlan;
-    if (plan == null || (plan.motors.isEmpty && plan.servos.isEmpty)) {
-      return;
-    }
-    if (!widget.canSendCommands) {
-      _notify('Conecta el serial o verifica el permiso de envío.');
-      return;
-    }
-    if (widget.simulating && widget.telemetry.state.machineState != 'IDLE') {
-      _notify('El simulador aún está preparando el brazo.');
-      return;
-    }
-
-    _queueProcess(plan);
-  }
-
-  void _queueProcess(_HmiProcessPlan plan) {
-    if (!_scheduledProcessIds.add(plan.process.id)) return;
-    if (mounted) {
-      setState(() {
-        _processRunning = true;
-        _processMessage = 'En cola: ${plan.process.name}';
-      });
-    }
-    _processQueue = _processQueue.then((_) => _executeQueuedProcess(plan));
-  }
-
-  Future<void> _executeQueuedProcess(_HmiProcessPlan plan) async {
-    try {
-      if (!widget.canSendCommands) {
-        throw StateError('Serial desconectado o sin permiso para enviar.');
-      }
-      if (widget.simulating && widget.telemetry.state.machineState != 'IDLE') {
-        throw StateError('El simulador aún está preparando el brazo.');
-      }
-      if (mounted) {
-        setState(() => _processMessage = 'Ejecutando ${plan.process.name}…');
-      }
-      if (plan.servos.isNotEmpty) _ensureTelemetry(force: true);
-      final orders = <int>{
-        ...plan.motors.map((action) => action.order),
-        ...plan.servos.map((action) => action.order),
-      }.toList()..sort();
-      for (final order in orders) {
-        if (!widget.canSendCommands) {
-          throw StateError('Se perdió la conexión con el serial.');
-        }
-        final actions = <_HmiProcessAction>[];
-        for (final action in plan.motors.where(
-          (action) => action.order == order,
-        )) {
-          final motor = _motors
-              .where((item) => item.id == action.motorId)
-              .firstOrNull;
-          if (motor == null) {
-            throw StateError('No se encontró el motor "${action.name}".');
-          }
-          actions.add(
-            _HmiProcessAction(
-              key: motor.key,
-              value: action.steps,
-              speed: action.speed,
-              motor: motor,
-              order: action.order,
-            ),
-          );
-        }
-        for (final action in plan.servos.where(
-          (action) => action.order == order,
-        )) {
-          final servo = _servos
-              .where((item) => item.id == action.servoId)
-              .firstOrNull;
-          if (servo == null) {
-            throw StateError('No se encontró el servo "${action.name}".');
-          }
-          actions.add(
-            _HmiProcessAction(
-              key: servo.key,
-              value: action.openValue,
-              speed: action.speed,
-              servo: servo,
-              order: action.order,
-            ),
-          );
-        }
-        if (actions.isEmpty) continue;
-        await _sendProcessGroup(actions);
-      }
-      if (mounted) {
-        setState(() => _processMessage = 'Proceso finalizado.');
-      }
-    } catch (error) {
-      if (mounted) setState(() => _processMessage = 'Error: $error');
-      _failPendingProcess(error);
-    } finally {
-      _scheduledProcessIds.remove(plan.process.id);
-      if (mounted) {
-        setState(() {
-          _processRunning = _scheduledProcessIds.isNotEmpty;
-          if (_processRunning) _processMessage = 'Esperando siguiente proceso…';
-        });
-      }
-    }
-  }
-
-  Future<void> _sendProcessGroup(List<_HmiProcessAction> actions) async {
-    final commandKeys = actions
-        .map(
-          (action) =>
-              ArduinoProcessCommandBuilder.commandKey(action.key).toUpperCase(),
-        )
-        .toSet();
-    if (commandKeys.length != actions.length) {
-      throw StateError('Un actuador tiene órdenes repetidas en este paso.');
-    }
-
-    final commands = <String>[];
-    final simulatedCommands = <String>[];
-    _pendingProcessAxes
-      ..clear()
-      ..addAll(commandKeys);
-    _pendingProcessServos.clear();
-    for (final action in actions) {
-      final key = ArduinoProcessCommandBuilder.commandKey(action.key);
-      commands.add(
-        ArduinoProcessCommandBuilder.movement(
-          key: key,
-          value: action.value,
-          speed: action.speed,
-        ),
-      );
-      if (action.servo != null) {
-        final commandKey = key.toUpperCase();
-        _pendingProcessServos[commandKey] = action.value;
-        if (commandKey != 'BCS') {
-          _pendingProcessServos['BCS'] = action.value;
-          _pendingProcessAxes.add('BCS');
-        }
-        simulatedCommands.add(
-          'BCS${action.value.round()}:${action.speed.round()}',
-        );
-      } else {
-        final motor = action.motor!;
-        final axis = _axisForMotor(motor.id);
-        final symbol =
-            axis?.key ??
-            ArduinoProcessCommandBuilder.commandKey(
-              motor.key,
-            ).toUpperCase().substring(2);
-        simulatedCommands.add(
-          'BC$symbol${action.value.round()}:${action.speed.round()}',
-        );
-      }
-    }
-
-    final finished = Completer<void>();
-    _processGroupFinished = finished;
-    final longest = actions
-        .map(
-          (action) =>
-              action.speed == 0 ? 0.0 : action.value.abs() / action.speed,
-        )
-        .fold<double>(0, (a, b) => a > b ? a : b);
-    final timeout = Duration(
-      seconds: (longest * 2 + 15).ceil().clamp(15, 3600).toInt(),
-    );
-    setState(
-      () =>
-          _processMessage = 'Movimientos en orden ${actions.first.order + 1}…',
-    );
-    try {
-      await widget.onCommand(
-        commands.join(' '),
-        simulatedCommand: simulatedCommands.join(' '),
-      );
-      await finished.future.timeout(timeout);
-    } finally {
-      if (identical(_processGroupFinished, finished)) {
-        _processGroupFinished = null;
-        _pendingProcessAxes.clear();
-        _pendingProcessServos.clear();
-      }
-    }
-  }
-
-  _ArmAxis? _axisForMotor(int motorId) {
-    for (final axis in _ArmAxis.values) {
-      if (_motorFor(axis)?.id == motorId) return axis;
-    }
-    return null;
-  }
-
-  void _completePendingAxis(String key) {
-    _pendingProcessAxes.remove(
-      ArduinoProcessCommandBuilder.commandKey(key).toUpperCase(),
-    );
-    _completeProcessGroupIfReady();
-  }
-
-  void _completePendingServo(String key, double target) {
-    final normalized = ArduinoProcessCommandBuilder.commandKey(
-      key,
-    ).toUpperCase();
-    final expected = _pendingProcessServos[normalized];
-    if (expected == null || (expected - target).abs() >= 0.5) return;
-    final aliases = _pendingProcessServos.entries
-        .where((entry) => (entry.value - expected).abs() < 0.5)
-        .map((entry) => entry.key)
-        .toList();
-    _pendingProcessServos.removeWhere(
-      (alias, value) =>
-          aliases.contains(alias) && (value - expected).abs() < 0.5,
-    );
-    _pendingProcessAxes.removeAll(aliases);
-    _completeProcessGroupIfReady();
-  }
-
-  void _completeProcessGroupIfReady() {
-    if (_pendingProcessAxes.isEmpty &&
-        _processGroupFinished?.isCompleted == false) {
-      _processGroupFinished!.complete();
-    }
-  }
-
-  void _failPendingProcess(Object error) {
-    final finished = _processGroupFinished;
-    if (finished != null && !finished.isCompleted) {
-      finished.completeError(error);
-    }
-    _processGroupFinished = null;
-    _pendingProcessAxes.clear();
-    _pendingProcessServos.clear();
   }
 
   void _onLine(TelemetryLogEntry entry) {
@@ -679,15 +369,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       if (isActive) {
         final newlyActive = _activeSensors.add(key);
         changed = newlyActive || changed;
-        if (newlyActive && widget.canSendCommands) {
-          for (final plan in _processPlans.values.where(
-            (plan) =>
-                plan.process.activationSensorId == sensor.id &&
-                (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
-          )) {
-            _queueProcess(plan);
-          }
-        }
       } else {
         changed = _activeSensors.remove(key) || changed;
       }
@@ -705,9 +386,7 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       changed = true;
     } else if (line.startsWith('BC,EVT,') || line.startsWith('BC,ERR,')) {
       changed = _handleFirmwareEvent(line);
-    } else if (line.startsWith('BCS,') ||
-        _isServoTelemetry(line) ||
-        _isPendingServoTelemetry(line)) {
+    } else if (line.startsWith('BCS,') || _isServoTelemetry(line)) {
       changed = _handleServoTelemetry(line);
     } else if (line.startsWith('BC')) {
       changed = _handleAxisTelemetry(line);
@@ -721,7 +400,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       }
     } else if (line.startsWith('ERR,')) {
       _cancelAnimations();
-      _failPendingProcess(StateError(line));
       _machineState = 'Error: ${line.substring(4)}';
       changed = true;
     }
@@ -741,15 +419,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
 
     final newlyActive = _activeSensors.add(key);
     if (newlyActive && mounted) setState(() {});
-    if (newlyActive && widget.canSendCommands) {
-      for (final plan in _processPlans.values.where(
-        (plan) =>
-            plan.process.activationSensorId == sensor.id &&
-            (plan.motors.isNotEmpty || plan.servos.isNotEmpty),
-      )) {
-        _queueProcess(plan);
-      }
-    }
   }
 
   (Sensor, bool)? _sensorSignal(String line) {
@@ -813,7 +482,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
     }
     if (fields.length >= 4 && int.tryParse(fields[3]) == 0) {
       _finishMotorMovement(motor, _positions[motor.id]);
-      _completePendingAxis(key);
     }
     return true;
   }
@@ -848,9 +516,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       }
     }
     _servoAngle = angle.clamp(0, 180).toDouble();
-    if (target != null && (target - angle).abs() < 0.5) {
-      _completePendingServo(fields.first, target);
-    }
     return true;
   }
 
@@ -860,13 +525,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
       (servo) =>
           ArduinoProcessCommandBuilder.commandKey(servo.key).toUpperCase() ==
           key,
-    );
-  }
-
-  bool _isPendingServoTelemetry(String line) {
-    final key = line.split(',').first;
-    return _pendingProcessServos.containsKey(
-      ArduinoProcessCommandBuilder.commandKey(key).toUpperCase(),
     );
   }
 
@@ -886,7 +544,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         for (final motor in _machineMotors) {
           _finishMotorMovement(motor, _positions[motor.id]);
         }
-        _failPendingProcess(StateError('El proceso fue detenido.'));
       }
       if (event == 'PAUSE') {
         _pauseStartedAt ??= DateTime.now();
@@ -914,7 +571,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         if (_machineState == 'Sin posición recibida') {
           _machineState = 'Posición sincronizada';
         }
-        _completePendingAxis(fields[3]);
         final direction = _lastDirections[motor.id] ?? 0;
         final sensorKey = direction >= 0
             ? motor.keySensorRight
@@ -935,7 +591,6 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         if (sensorKey != null) _activeSensors.add(sensorKey.toUpperCase());
         _finishMotorMovement(motor, _positions[motor.id]);
       }
-      _completePendingAxis(fields[3]);
       _machineState = 'Límite activo';
       return true;
     }
@@ -973,12 +628,10 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
         _knownPositions.add(motor.id);
         _finishMotorMovement(motor, position);
       }
-      _completePendingAxis(fields[3]);
       _machineState = _animations.isEmpty ? 'Listo' : 'En movimiento';
       return true;
     }
     if (line.startsWith('BC,ERR,')) {
-      _failPendingProcess(StateError(line));
       _machineState = 'Error serial';
       return true;
     }
@@ -1508,16 +1161,13 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
                   DropdownMenuItem(value: machine, child: Text(machine.name)),
             )
             .toList(),
-        onChanged: _processRunning ? null : _selectMachine,
+        onChanged: _selectMachine,
       ),
     ),
   );
 
   Widget _processControls() {
     final plans = _plansForMachine(_selectedMachine);
-    final plan = _selectedPlan;
-    final hasActions =
-        plan != null && (plan.motors.isNotEmpty || plan.servos.isNotEmpty);
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -1528,63 +1178,27 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
             const SizedBox(height: 8),
             if (plans.isEmpty)
               const Text('No hay procesos asociados a este brazo.')
-            else
-              DropdownButtonFormField<int>(
-                initialValue: _selectedProcessId,
-                decoration: const InputDecoration(
-                  labelText: 'Seleccionar proceso',
+            else ...[
+              for (final plan in plans)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(plan.process.name),
+                  subtitle: Text(
+                    plan.process.mqttTopic == null
+                        ? 'Al conectar el serial'
+                        : 'MQTT · ${plan.process.mqttTopic} = '
+                              '${plan.process.mqttExpectedMessage}',
+                  ),
+                  trailing: Text(
+                    '${plan.motors.length + plan.servos.length} mov.',
+                  ),
                 ),
-                items: plans
-                    .map(
-                      (item) => DropdownMenuItem(
-                        value: item.process.id,
-                        child: Text(item.process.name),
-                      ),
-                    )
-                    .toList(),
-                onChanged: _processRunning
-                    ? null
-                    : (id) => setState(() => _selectedProcessId = id),
-              ),
-            if (plan != null) ...[
-              const SizedBox(height: 6),
-              Text(
-                '${plan.motors.length + plan.servos.length} movimientos · '
-                '${_processOrders(plan).length} grupos por orden'
-                '${plan.process.activationSensorId == null ? ' · al conectar serial' : ' · activado por sensor'}'
-                ' · también disponible para inicio manual',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            const SizedBox(height: 8),
-            FilledButton.icon(
-              onPressed:
-                  widget.canSendCommands && hasActions && !_processRunning
-                  ? _runSelectedProcess
-                  : null,
-              icon: _processRunning
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.play_arrow),
-              label: Text(_processRunning ? 'Ejecutando…' : 'Ejecutar proceso'),
-            ),
-            if (_processMessage != null) ...[
-              const SizedBox(height: 8),
-              Text(_processMessage!),
             ],
           ],
         ),
       ),
     );
   }
-
-  List<int> _processOrders(_HmiProcessPlan plan) => <int>{
-    ...plan.motors.map((item) => item.order),
-    ...plan.servos.map((item) => item.order),
-  }.toList()..sort();
 
   Widget _stateCard(ColorScheme colors) {
     final hasPosition = _ArmAxis.values.any((axis) {
@@ -1735,14 +1349,14 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
                 ),
                 IconButton(
                   tooltip: 'Mover ${axis.key} en sentido negativo',
-                  onPressed: widget.canSendCommands && !_processRunning
+                  onPressed: widget.canSendCommands
                       ? () => _move(axis, -1)
                       : null,
                   icon: const Icon(Icons.remove_circle_outline),
                 ),
                 IconButton(
                   tooltip: 'Mover ${axis.key} en sentido positivo',
-                  onPressed: widget.canSendCommands && !_processRunning
+                  onPressed: widget.canSendCommands
                       ? () => _move(axis, 1)
                       : null,
                   icon: const Icon(Icons.add_circle_outline),
@@ -1819,10 +1433,7 @@ class _ScaraArmHmiPanelState extends State<ScaraArmHmiPanel> {
               ),
               IconButton(
                 tooltip: 'Mover servo',
-                onPressed:
-                    widget.canSendCommands &&
-                        !_processRunning &&
-                        _selectedServo != null
+                onPressed: widget.canSendCommands && _selectedServo != null
                     ? _setServo
                     : null,
                 icon: const Icon(Icons.send),
@@ -1910,24 +1521,6 @@ class _HmiProcessPlan {
   final Process process;
   final List<ProcessMotors> motors;
   final List<ProcessServo> servos;
-}
-
-class _HmiProcessAction {
-  const _HmiProcessAction({
-    required this.key,
-    required this.value,
-    required this.speed,
-    required this.order,
-    this.motor,
-    this.servo,
-  });
-
-  final String key;
-  final double value;
-  final double speed;
-  final int order;
-  final Motor? motor;
-  final Servo? servo;
 }
 
 class _PositionAnimation {

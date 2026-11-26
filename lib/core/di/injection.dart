@@ -1,8 +1,5 @@
 import 'package:get_it/get_it.dart';
 
-import '../../features/peer_to_peer/domain/entities/peer_entities.dart';
-import '../../features/peer_to_peer/domain/repositories/peer_repository.dart';
-import '../../features/peer_to_peer/peer_injection.dart';
 import '../../features/serial_connection/data/datasources/serial_datasource.dart';
 import '../../features/serial_connection/data/repositories/serial_repository_impl.dart';
 import '../../features/serial_connection/domain/repositories/serial_repository.dart';
@@ -10,8 +7,8 @@ import '../../features/serial_connection/presentation/bloc/connection_bloc.dart'
 import '../../features/system/system_injection.dart';
 import '../../features/system/domain/services/system_configuration_service.dart';
 import '../../features/telemetry/data/parsers/telemetry_parser.dart';
-import '../../features/telemetry/data/serial_peer_bridge.dart';
 import '../../features/telemetry/presentation/cubit/telemetry_cubit.dart';
+import '../../features/mqtt/data/mqtt_connection_service.dart';
 
 final GetIt sl = GetIt.instance;
 
@@ -23,25 +20,12 @@ Future<void> configureDependencies() async {
       () => SerialRepositoryImpl(sl<SerialDatasource>()),
     )
     ..registerLazySingleton<TelemetryParser>(TelemetryParser.new)
+    ..registerLazySingleton<MqttConnectionService>(MqttConnectionService.new)
     // Presentation (singletons: el historial sobrevive al cambio de pantalla)
     ..registerLazySingleton<ConnectionBloc>(
       () => ConnectionBloc(
         sl<SerialRepository>(),
         onCommandSent: sl<TelemetryCubit>().recordSent,
-        onCommandShared: (event) async {
-          final peer = sl<PeerRepository>();
-          if (!peer.session.isMaster) return;
-          for (final client in peer.session.clients) {
-            if (client.id == event.sourceClientId) continue;
-            await peer.sendToClient(
-              client.id,
-              PeerMessage(
-                type: PeerMessageType.telemetry,
-                payload: {'kind': 'serial_sent', 'line': event.text},
-              ),
-            );
-          }
-        },
       ),
     )
     ..registerLazySingleton<TelemetryCubit>(
@@ -51,16 +35,6 @@ Future<void> configureDependencies() async {
       ),
     );
 
-  registerPeerToPeer(sl);
   registerSystem(sl);
   sl<SystemConfigurationService>();
-  sl.registerLazySingleton<SerialPeerBridge>(
-    () => SerialPeerBridge(
-      serial: sl<SerialRepository>(),
-      peer: sl(),
-      telemetry: sl<TelemetryCubit>(),
-      connection: sl<ConnectionBloc>(),
-    ),
-  );
-  sl<SerialPeerBridge>();
 }

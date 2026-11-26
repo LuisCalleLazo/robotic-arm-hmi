@@ -4,8 +4,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:get_it/get_it.dart';
 
-import '../../../peer_to_peer/domain/repositories/peer_repository.dart';
-import '../../../peer_to_peer/domain/entities/peer_session.dart';
 import '../../../system/domain/entities/motor.dart';
 import '../../../system/domain/entities/sensor.dart';
 import '../../../system/domain/entities/servo.dart';
@@ -65,18 +63,15 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   String? _error;
   StreamSubscription<TelemetryLogEntry>? _lineSubscription;
   StreamSubscription<void>? _machineCatalogSubscription;
-  StreamSubscription<PeerSession>? _peerSessionSubscription;
 
   @override
   void initState() {
     super.initState();
     _lineSubscription = widget.telemetry.lineEvents.listen(_onLine);
-    final peer = GetIt.I<PeerRepository>();
     final configuration = GetIt.I<SystemConfigurationService>();
     _machineCatalogSubscription = configuration.machineCatalogChanges.listen(
       (_) => _load(),
     );
-    _peerSessionSubscription = peer.sessionStream.listen((_) => _load());
     _load();
     WidgetsBinding.instance.addPostFrameCallback((_) => _requestTelemetry());
   }
@@ -97,35 +92,19 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
   void dispose() {
     _lineSubscription?.cancel();
     _machineCatalogSubscription?.cancel();
-    _peerSessionSubscription?.cancel();
     super.dispose();
   }
 
   Future<void> _load() async {
     final generation = ++_loadGeneration;
     try {
-      final peer = GetIt.I<PeerRepository>();
-      final configuration = GetIt.I<SystemConfigurationService>();
-      late final List<SystemMachine> machines;
-      late final List<Motor> motors;
-      late final List<Servo> servos;
-      late final List<Sensor> sensors;
-      late final List<SystemPosition> positions;
-      if (peer.session.isSlave) {
-        machines = configuration.sharedMachines;
-        motors = configuration.sharedMotors;
-        servos = configuration.sharedServos;
-        sensors = configuration.sharedSensors;
-        positions = configuration.sharedSystemPositions;
-      } else {
-        final repository = GetIt.I<SystemRepository>();
-        machines = await repository.getMachines();
-        motors = await repository.getMotors();
-        servos = await repository.getServos();
-        sensors = await repository.getSensors();
-        positions = await GetIt.I<SystemPositionRepository>()
-            .getSystemPositions();
-      }
+      final repository = GetIt.I<SystemRepository>();
+      final machines = await repository.getMachines();
+      final motors = await repository.getMotors();
+      final servos = await repository.getServos();
+      final sensors = await repository.getSensors();
+      final positions = await GetIt.I<SystemPositionRepository>()
+          .getSystemPositions();
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _machines = machines;
@@ -319,11 +298,6 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
       ),
     );
     if (selected == null || selected.id == selectedId) return;
-    if (GetIt.I<PeerRepository>().session.isSlave) {
-      _notify('La distribución del sistema solo puede editarse en el maestro.');
-      return;
-    }
-
     setState(() => _saving = true);
     try {
       final repository = GetIt.I<SystemPositionRepository>();
@@ -607,10 +581,7 @@ class _SystemOverviewPanelState extends State<SystemOverviewPanel> {
                     label: const Text('Parar todo'),
                   ),
                   OutlinedButton.icon(
-                    onPressed:
-                        _saving || GetIt.I<PeerRepository>().session.isSlave
-                        ? null
-                        : _addSlot,
+                    onPressed: _saving ? null : _addSlot,
                     icon: const Icon(Icons.add),
                     label: const Text('Agregar sección'),
                   ),

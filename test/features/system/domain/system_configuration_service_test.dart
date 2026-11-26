@@ -1,218 +1,192 @@
-import 'dart:async';
-
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:robotic_arm_hmi/features/peer_to_peer/domain/entities/peer_entities.dart';
-import 'package:robotic_arm_hmi/features/peer_to_peer/domain/repositories/peer_repository.dart';
+import 'package:robotic_arm_hmi/features/system/data/database/system_database.dart'
+    hide ProcessMotors;
+import 'package:robotic_arm_hmi/features/system/data/database/system_database_manager.dart';
+import 'package:robotic_arm_hmi/features/system/data/datasources/system_local_datasource.dart';
+import 'package:robotic_arm_hmi/features/system/data/repositories/system_repository_impl.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/machine_configuration.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/motor.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/process.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/process_motors.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/process_servo.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/sensor.dart';
+import 'package:robotic_arm_hmi/features/system/domain/entities/servo.dart';
 import 'package:robotic_arm_hmi/features/system/domain/entities/system_machine.dart';
-import 'package:robotic_arm_hmi/features/system/domain/entities/system_position.dart';
-import 'package:robotic_arm_hmi/features/system/domain/repositories/system_repository.dart';
 import 'package:robotic_arm_hmi/features/system/domain/services/system_configuration_service.dart';
 
 void main() {
-  late _FakePeerRepository peer;
+  late SystemDatabaseManager manager;
   late SystemConfigurationService service;
+  late SystemRepositoryImpl repository;
 
-  setUp(() {
-    peer = _FakePeerRepository();
-    service = SystemConfigurationService(
-      peer: peer,
-      system: _UnusedSystemRepository(),
+  setUp(() async {
+    manager = SystemDatabaseManager(
+      databaseFactory: () => SystemDatabase(NativeDatabase.memory()),
     );
+    await manager.start();
+    repository = SystemRepositoryImpl(SystemLocalDataSource(manager));
+    service = SystemConfigurationService(system: repository);
   });
 
   tearDown(() async {
     await service.dispose();
-    await peer.close();
+    await manager.dispose();
+  });
+
+  test('saves a machine with multiple small belts and arms', () async {
+    final configuration = MachineConfiguration(
+      machine: SystemMachine(id: 1, name: 'Sistema', type: 'Sistema'),
+      components: [
+        SystemMachine(
+          id: 2,
+          name: 'Cinta 1',
+          type: 'Cinta pequeña',
+          parentMachineId: 1,
+        ),
+        SystemMachine(
+          id: 3,
+          name: 'Cinta 2',
+          type: 'Cinta pequeña',
+          parentMachineId: 1,
+        ),
+        SystemMachine(id: 4, name: 'Brazo', type: 'Brazo', parentMachineId: 1),
+        SystemMachine(
+          id: 5,
+          name: 'Cinta grande',
+          type: 'Cinta grande',
+          parentMachineId: 1,
+        ),
+      ],
+      motors: [
+        Motor(
+          id: 10,
+          systemMachineId: 4,
+          key: 'X',
+          keySensorRight: null,
+          keySensorLeft: null,
+          speed: 5000,
+          maxStepsRight: null,
+          maxStepsLeft: null,
+        ),
+      ],
+      servos: [Servo(id: 11, machineId: 4, key: 'S', maxOpen: 180)],
+      sensors: [Sensor(id: 12, machineId: 1, key: 'CGC', name: 'Entrada')],
+    );
+
+    await service.saveMachine(configuration);
+
+    expect(await repository.getMachines(), hasLength(5));
+    expect(await repository.getMotors(), hasLength(1));
+    expect(await repository.getServos(), hasLength(1));
+    expect(await repository.getSensors(), hasLength(1));
+  });
+
+  test('rejects a machine configured with multiple large belts', () async {
+    final configuration = MachineConfiguration(
+      machine: SystemMachine(id: 1, name: 'Sistema', type: 'Sistema'),
+      components: [
+        SystemMachine(
+          id: 2,
+          name: 'Cinta grande 1',
+          type: 'Cinta grande',
+          parentMachineId: 1,
+        ),
+        SystemMachine(
+          id: 3,
+          name: 'Cinta grande 2',
+          type: 'CINTA GRANDE',
+          parentMachineId: 1,
+        ),
+      ],
+    );
+
+    await expectLater(service.saveMachine(configuration), throwsStateError);
+    expect(await repository.getMachines(), isEmpty);
   });
 
   test(
-    'slave can create and edit its machine without deleting components',
+    'coordinates motor and servo movements in one process sequence',
     () async {
-      await service.saveMachine(_configuration());
       await service.saveMachine(
-        _configuration(motorSpeed: 6200, componentName: 'Cinta editada'),
+        MachineConfiguration(
+          machine: SystemMachine(id: 1, name: 'Sistema', type: 'Sistema'),
+          motors: [
+            Motor(
+              id: 10,
+              systemMachineId: 1,
+              key: 'X',
+              keySensorRight: null,
+              keySensorLeft: null,
+              speed: 5000,
+              maxStepsRight: null,
+              maxStepsLeft: null,
+            ),
+          ],
+          servos: [Servo(id: 11, machineId: 1, key: 'S', maxOpen: 180)],
+        ),
       );
 
-      expect(service.localSlaveConfiguration?.motors.single.speed, 6200);
-      expect(
-        service.localSlaveConfiguration?.components.single.name,
-        'Cinta editada',
-      );
-      await expectLater(
-        service.saveMachine(_configuration(includeMotor: false)),
-        throwsStateError,
-      );
-      await expectLater(
-        service.saveMachine(_configuration(includeComponent: false)),
-        throwsStateError,
-      );
-      expect(
-        peer.sent.where(
-          (message) =>
-              message.type == PeerMessageType.configuration &&
-              message.payload['kind'] == 'machine',
+      await service.saveProcessConfiguration(
+        process: Process(
+          id: 20,
+          name: 'Mover',
+          order: 0,
+          machineId: 1,
+          mqttTopic: 'robot/entrada',
+          mqttExpectedMessage: 'INICIAR',
         ),
-        hasLength(2),
+        motors: [
+          ProcessMotors(
+            id: 21,
+            processId: 20,
+            motorId: 10,
+            name: 'X',
+            order: 0,
+            steps: 100,
+            speed: 1000,
+          ),
+        ],
+        servos: [
+          ProcessServo(
+            id: 22,
+            processId: 20,
+            servoId: 11,
+            name: 'S',
+            order: 1,
+            openValue: 90,
+            speed: 60,
+          ),
+        ],
       );
+
+      expect(await repository.getProcessMotors(20), hasLength(1));
+      expect(await repository.getProcessServos(20), hasLength(1));
+      final savedProcess = (await repository.getProcesses()).single;
+      expect(savedProcess.mqttTopic, 'robot/entrada');
+      expect(savedProcess.mqttExpectedMessage, 'INICIAR');
     },
   );
 
-  test('slave accepts an activation sensor from another machine', () async {
-    await service.saveMachine(_configuration());
-    peer.messagesController.add(
-      PeerMessage(
-        type: PeerMessageType.telemetry,
-        payload: {
-          'kind': 'sensor_catalog',
-          'sensors': [
-            {'id': 90, 'machineId': 80, 'key': 'CGC', 'name': 'Cinta grande'},
-          ],
-        },
+  test('requires both MQTT topic and expected message', () async {
+    await service.saveMachine(
+      MachineConfiguration(
+        machine: SystemMachine(id: 1, name: 'Sistema', type: 'Sistema'),
       ),
     );
-    await Future<void>.delayed(Duration.zero);
 
-    expect(service.sharedSensors.single.id, 90);
-    await service.saveProcessDefinition(
-      Process(
-        id: 100,
-        name: 'Tomar objeto',
-        order: 0,
-        activationSensorId: 90,
-        machineId: 1,
+    await expectLater(
+      service.saveProcessDefinition(
+        Process(
+          id: 30,
+          name: 'Activar',
+          order: 0,
+          machineId: 1,
+          mqttTopic: 'robot/entrada',
+        ),
       ),
+      throwsStateError,
     );
-    expect(
-      peer.sent.any(
-        (message) =>
-            message.type == PeerMessageType.configuration &&
-            message.payload['kind'] == 'process_definition',
-      ),
-      isTrue,
-    );
+    expect(await repository.getProcesses(), isEmpty);
   });
-
-  test('slave receives shared system layout and actuator catalog', () async {
-    peer.messagesController.add(
-      PeerMessage(
-        type: PeerMessageType.telemetry,
-        payload: {
-          'kind': 'sensor_catalog',
-          'machines': [
-            {
-              'id': 12,
-              'name': 'Cinta grande',
-              'type': 'CINTA GRANDE',
-              'parentMachineId': null,
-            },
-          ],
-          'sensors': [
-            {'id': 13, 'machineId': 12, 'key': 'CGC', 'name': 'Detector'},
-          ],
-          'motors': [
-            {
-              'id': 14,
-              'systemMachineId': 12,
-              'key': 'X',
-              'keySensorRight': null,
-              'keySensorLeft': null,
-              'speed': 3000,
-              'maxStepsRight': '12000',
-              'maxStepsLeft': '12000',
-            },
-          ],
-          'servos': [
-            {'id': 15, 'machineId': 12, 'key': 'S', 'maxOpen': 180},
-          ],
-          'positions': [
-            {
-              'id': 16,
-              'number': 1,
-              'type': 'CINTA GRANDE',
-              'systemMachineId': 12,
-            },
-          ],
-        },
-      ),
-    );
-    await Future<void>.delayed(Duration.zero);
-
-    expect(service.sharedMachines.single.name, 'Cinta grande');
-    expect(service.sharedSensors.single.key, 'CGC');
-    expect(service.sharedMotors.single.maxStepsRight, '12000');
-    expect(service.sharedServos.single.maxOpen, 180);
-    expect(service.sharedSystemPositions.single, isA<SystemPosition>());
-    expect(service.sharedSystemPositions.single.systemMachineId, 12);
-  });
-}
-
-MachineConfiguration _configuration({
-  double motorSpeed = 5000,
-  String componentName = 'Cinta',
-  bool includeMotor = true,
-  bool includeComponent = true,
-}) => MachineConfiguration(
-  machine: SystemMachine(id: 1, name: 'Brazo', type: 'SISTEMA'),
-  components: includeComponent
-      ? [
-          SystemMachine(
-            id: 2,
-            name: componentName,
-            type: 'CINTA PEQUEÑA',
-            parentMachineId: 1,
-          ),
-        ]
-      : const [],
-  motors: includeMotor
-      ? [
-          Motor(
-            id: 3,
-            systemMachineId: 1,
-            key: 'X',
-            keySensorRight: null,
-            keySensorLeft: null,
-            speed: motorSpeed,
-            maxStepsRight: null,
-            maxStepsLeft: null,
-          ),
-        ]
-      : const [],
-);
-
-class _FakePeerRepository implements PeerRepository {
-  final _sessionChanges = StreamController<PeerSession>.broadcast();
-  final _messages = StreamController<PeerMessage>.broadcast();
-  final sent = <PeerMessage>[];
-  StreamController<PeerMessage> get messagesController => _messages;
-
-  @override
-  PeerSession get session => const PeerSession(
-    role: PeerRole.slave,
-    status: PeerConnectionStatus.connected,
-  );
-
-  @override
-  Stream<PeerSession> get sessionStream => _sessionChanges.stream;
-
-  @override
-  Stream<PeerMessage> get messages => _messages.stream;
-
-  @override
-  Future<void> send(PeerMessage message) async => sent.add(message);
-
-  Future<void> close() async {
-    await _sessionChanges.close();
-    await _messages.close();
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
-class _UnusedSystemRepository implements SystemRepository {
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

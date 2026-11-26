@@ -32,10 +32,10 @@ void main() {
     );
 
     for (var index = 0; index < 200; index++) {
-      cubit.ingestPeerLine('CPS1');
+      cubit.ingestSimulatedLine('CPS1');
     }
-    cubit.ingestPeerLine('CPS0');
-    cubit.ingestPeerLine('CPS1');
+    cubit.ingestSimulatedLine('CPS0');
+    cubit.ingestSimulatedLine('CPS1');
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     expect(cubit.state.consoleEntries.map((entry) => entry.line).toList(), [
